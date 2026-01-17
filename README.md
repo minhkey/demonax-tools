@@ -48,7 +48,7 @@ cargo build --release
 ./target/release/demonax --database ./game.sqlite update-quest-overview --game-path /path/to/game
 ./target/release/demonax --database ./game.sqlite update-items-quests --game-path /path/to/game
 ./target/release/demonax --database ./game.sqlite update-raids --game-path /path/to/game
-./target/release/demonax --database ./game.sqlite update-skinning --skinning-csv /path/to/skinning.csv
+./target/release/demonax --database ./game.sqlite update-harvesting --harvesting-csv /path/to/harvesting.csv
 ./target/release/demonax --database ./game.sqlite update-spells --magic-cc /path/to/magic.cc --game-path /path/to/game
 ./target/release/demonax --database ./game.sqlite process-usr --input-dir /path/to/game/usr --snapshot-date 2026-01-07
 

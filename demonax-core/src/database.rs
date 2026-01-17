@@ -327,12 +327,6 @@ impl Database {
             "#,
         )?;
 
-        // Migration: Rename skinning tables to harvesting (if they exist)
-        let _ = tx.execute("ALTER TABLE skinning RENAME TO harvesting", ());
-        let _ = tx.execute("ALTER TABLE skinning_data RENAME TO harvesting_data", ());
-        let _ = tx.execute("DROP INDEX IF EXISTS idx_skinning_data_tool_id", ());
-        let _ = tx.execute("DROP INDEX IF EXISTS idx_skinning_data_corpse_id", ());
-
         tx.commit()?;
         Ok(())
     }
