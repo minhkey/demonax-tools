@@ -3,8 +3,9 @@
 use crate::error::{DemonaxError, Result};
 use crate::file_utils::{read_latin1_file, read_utf8_file};
 use crate::models::{
-    BestiaryEntry, Creature, CreatureLoot, Item, ItemPrice, ParsedUsrFile, PlayerSkills,
-    QuestChest, QuestCompletion, Raid, SkinningEntry, Spell, SpellTeacher,
+    BestiaryEntry, Creature, CreatureLoot, CreatureSpell, HarvestingEntry, Item, ItemPrice, ParsedUsrFile, PlayerSkills,
+    QuestChest, QuestCompletion, Raid, RuneSeller, Spell, SpellImpactType, SpellShapeType, SpellTeacher,
+    damage_type_name,
 };
 use regex::{Regex, escape};
 use serde_json::json;
@@ -91,7 +92,7 @@ pub fn parse_usr_file(file_path: &Path) -> Result<ParsedUsrFile> {
         }
     }
 
-    // Parse pair list (QuestValues, Bestiary, Skinning)
+    // Parse pair list (QuestValues, Bestiary, Harvesting)
     fn parse_pair_list(text: &str, key: &str) -> Vec<(i32, i32)> {
         let mut result = Vec::new();
         let val = extract_value(text, key);
@@ -135,11 +136,11 @@ pub fn parse_usr_file(file_path: &Path) -> Result<ParsedUsrFile> {
         })
         .collect();
 
-    let skinning: Vec<SkinningEntry> = parse_pair_list(&text, "Skinning")
+    let harvesting: Vec<HarvestingEntry> = parse_pair_list(&text, "Harvesting")
         .into_iter()
-        .map(|(race_id, skin_count)| SkinningEntry {
+        .map(|(race_id, harvest_count)| HarvestingEntry {
             race_id,
-            skin_count,
+            harvest_count,
         })
         .collect();
 
@@ -150,7 +151,7 @@ pub fn parse_usr_file(file_path: &Path) -> Result<ParsedUsrFile> {
         skills,
         quest_values,
         bestiary,
-        skinning,
+        harvesting,
         equipment,
         source_file: file_path.to_string_lossy().to_string(),
     })
@@ -385,6 +386,377 @@ pub fn parse_creature_loot(file_path: &Path) -> Result<Vec<CreatureLoot>> {
     }
 
     Ok(loot)
+}
+
+/// Parse creature flags from .mon file.
+/// Returns a vector of flag names.
+pub fn parse_creature_flags(text: &str) -> Result<Vec<String>> {
+    let flags_re = Regex::new(r"Flags\s*=\s*\{([^}]+)\}").unwrap();
+
+    if let Some(caps) = flags_re.captures(text) {
+        let content = caps.get(1).unwrap().as_str();
+        let flags: Vec<String> = content
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        Ok(flags)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+/// Parse creature skills from .mon file.
+/// Returns a vector of (skill_name, skill_value) tuples.
+pub fn parse_creature_skills(text: &str) -> Result<Vec<(String, i32)>> {
+    let skills_section_re = Regex::new(r"Skills\s*=\s*\{([^}]+)\}").unwrap();
+
+    if let Some(caps) = skills_section_re.captures(text) {
+        let content = caps.get(1).unwrap().as_str();
+        let mut skills = Vec::new();
+
+        // Match pattern: (SkillName, value, ...)
+        let skill_re = Regex::new(r"\(([^,]+),\s*([0-9]+)").unwrap();
+
+        for skill_match in skill_re.captures_iter(content) {
+            let skill_name = skill_match.get(1).unwrap().as_str().trim().to_string();
+            if let Ok(skill_value) = skill_match.get(2).unwrap().as_str().parse::<i32>() {
+                skills.push((skill_name, skill_value));
+            }
+        }
+
+        Ok(skills)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+/// Parse spell shape type from string
+fn parse_spell_shape_type(shape_str: &str) -> Option<SpellShapeType> {
+    match shape_str.trim() {
+        "Actor" => Some(SpellShapeType::Actor),
+        "Victim" => Some(SpellShapeType::Victim),
+        "Origin" => Some(SpellShapeType::Origin),
+        "Destination" => Some(SpellShapeType::Destination),
+        "Angle" => Some(SpellShapeType::Angle),
+        _ => None,
+    }
+}
+
+/// Parse spell impact type from string
+fn parse_spell_impact_type(impact_str: &str) -> Option<SpellImpactType> {
+    match impact_str.trim() {
+        "Damage" => Some(SpellImpactType::Damage),
+        "Field" => Some(SpellImpactType::Field),
+        "Healing" => Some(SpellImpactType::Healing),
+        "Speed" => Some(SpellImpactType::Speed),
+        "Drunken" => Some(SpellImpactType::Drunken),
+        "Strength" => Some(SpellImpactType::Strength),
+        "Outfit" => Some(SpellImpactType::Outfit),
+        "Summon" => Some(SpellImpactType::Summon),
+        _ => None,
+    }
+}
+
+/// Interpret spell and generate human-readable fields
+fn interpret_spell(
+    shape_type: SpellShapeType,
+    _shape_params: &[i32],
+    impact_type: SpellImpactType,
+    impact_params: &[i32],
+) -> (String, String, String, String) {
+
+    let shape_name = match shape_type {
+        SpellShapeType::Actor => "Self",
+        SpellShapeType::Victim => "Single Target",
+        SpellShapeType::Origin => "Area (Self)",
+        SpellShapeType::Destination => "Area (Target)",
+        SpellShapeType::Angle => "Cone",
+    }.to_string();
+
+    let (impact_name, spell_category) = match impact_type {
+        SpellImpactType::Damage => {
+            let dmg_type = impact_params.get(0).copied().unwrap_or(1);
+            let dmg_name = damage_type_name(dmg_type);
+            (format!("{} Damage", dmg_name), "Attack".to_string())
+        },
+        SpellImpactType::Healing => ("Healing".to_string(), "Heal".to_string()),
+        SpellImpactType::Speed => {
+            let modifier = impact_params.get(0).copied().unwrap_or(0);
+            if modifier > 0 {
+                ("Speed Boost".to_string(), "Buff".to_string())
+            } else {
+                ("Paralyze".to_string(), "Debuff".to_string())
+            }
+        },
+        SpellImpactType::Summon => ("Summon".to_string(), "Summon".to_string()),
+        SpellImpactType::Field => ("Field".to_string(), "Attack".to_string()),
+        SpellImpactType::Drunken => ("Drunken".to_string(), "Debuff".to_string()),
+        SpellImpactType::Strength => ("Strength Boost".to_string(), "Buff".to_string()),
+        SpellImpactType::Outfit => ("Transform".to_string(), "Buff".to_string()),
+    };
+
+    // Generate spell name based on shape + impact combination
+    let spell_name = match (shape_type, impact_type) {
+        // Damage spells
+        (SpellShapeType::Victim, SpellImpactType::Damage) => {
+            let dmg_type = impact_params.get(0).copied().unwrap_or(1);
+            match dmg_type {
+                1 => "Strike",
+                2 => "Poison Strike",
+                4 => "Fire Strike",
+                8 => "Energy Strike",
+                256 => "Life Drain",
+                512 => "Mana Drain",
+                _ => "Magic Strike",
+            }.to_string()
+        },
+        (SpellShapeType::Destination, SpellImpactType::Damage) => {
+            let dmg_type = impact_params.get(0).copied().unwrap_or(1);
+            match dmg_type {
+                4 => "Fireball",
+                8 => "Energy Ball",
+                2 => "Poison Bomb",
+                _ => "Explosion",
+            }.to_string()
+        },
+        (SpellShapeType::Angle, SpellImpactType::Damage) => {
+            let dmg_type = impact_params.get(0).copied().unwrap_or(1);
+            match dmg_type {
+                4 => "Fire Wave",
+                8 => "Energy Wave",
+                2 => "Poison Wave",
+                1 => "Physical Wave",
+                _ => "Magic Wave",
+            }.to_string()
+        },
+        (SpellShapeType::Origin, SpellImpactType::Damage) => {
+            let dmg_type = impact_params.get(0).copied().unwrap_or(1);
+            match dmg_type {
+                4 => "Fire Burst",
+                8 => "Energy Burst",
+                2 => "Poison Burst",
+                32 => "Poison Field (DoT)",
+                64 => "Fire Field (DoT)",
+                128 => "Energy Field (DoT)",
+                _ => "Explosion",
+            }.to_string()
+        },
+
+        // Healing spells
+        (SpellShapeType::Actor, SpellImpactType::Healing) => "Self Heal".to_string(),
+        (SpellShapeType::Victim, SpellImpactType::Healing) => "Heal Other".to_string(),
+        (SpellShapeType::Origin, SpellImpactType::Healing) => "Area Heal".to_string(),
+
+        // Speed spells
+        (SpellShapeType::Actor, SpellImpactType::Speed) => {
+            let modifier = impact_params.get(0).copied().unwrap_or(0);
+            if modifier > 0 { "Haste" } else { "Self Slow" }.to_string()
+        },
+        (SpellShapeType::Victim, SpellImpactType::Speed) => {
+            let modifier = impact_params.get(0).copied().unwrap_or(0);
+            if modifier > 0 { "Speed Boost" } else { "Paralyze" }.to_string()
+        },
+        (SpellShapeType::Origin, SpellImpactType::Speed) => {
+            let modifier = impact_params.get(0).copied().unwrap_or(0);
+            if modifier > 0 { "Mass Haste" } else { "Mass Paralyze" }.to_string()
+        },
+
+        // Summon spells
+        (_, SpellImpactType::Summon) => "Summon Creature".to_string(),
+
+        // Field spells
+        (SpellShapeType::Destination, SpellImpactType::Field) => "Magic Field".to_string(),
+
+        // Other combinations
+        _ => format!("{} {}", shape_name, impact_name),
+    };
+
+    (spell_name, spell_category, shape_name, impact_name)
+}
+
+/// Extract detailed spell parameters based on shape and impact types
+#[allow(clippy::type_complexity)]
+fn extract_spell_details(
+    shape_type: SpellShapeType,
+    shape_params: &[i32],
+    impact_type: SpellImpactType,
+    impact_params: &[i32],
+) -> (Option<i32>, Option<String>, Option<i32>, Option<String>, Option<i32>, Option<i32>,
+      Option<i32>, Option<i32>, Option<i32>, Option<i32>, Option<i32>, Option<i32>, Option<i32>, Option<i32>) {
+
+    // Extract range (varies by shape type)
+    let range = match shape_type {
+        SpellShapeType::Victim => shape_params.get(0).copied(),
+        SpellShapeType::Destination => shape_params.get(0).copied(),
+        SpellShapeType::Angle => shape_params.get(1).copied(),
+        _ => None,
+    };
+
+    // Extract area size
+    let area_size = match shape_type {
+        SpellShapeType::Origin => {
+            let radius = shape_params.get(0).copied().unwrap_or(0);
+            Some(format!("Radius {}", radius))
+        },
+        SpellShapeType::Destination => {
+            let param1 = shape_params.get(1).copied().unwrap_or(0);
+            let param2 = shape_params.get(2).copied().unwrap_or(0);
+            Some(format!("{}x{}", param1, param2))
+        },
+        _ => None,
+    };
+
+    // Extract angle (for cone spells)
+    let angle = match shape_type {
+        SpellShapeType::Angle => shape_params.get(0).copied(),
+        _ => None,
+    };
+
+    // Extract visual effect IDs
+    let (effect_id, missile_effect_id) = match shape_type {
+        SpellShapeType::Actor => (shape_params.get(0).copied(), None),
+        SpellShapeType::Victim => (
+            shape_params.get(2).copied(),  // Hit effect
+            shape_params.get(1).copied()   // Missile sprite ID
+        ),
+        SpellShapeType::Origin => (shape_params.get(1).copied(), None),
+        SpellShapeType::Destination => (shape_params.get(3).copied(), None),
+        SpellShapeType::Angle => (shape_params.get(2).copied(), None),
+    };
+
+    // Extract impact-specific details
+    let (damage_type, base_value, variation, min_value, max_value, speed_modifier,
+         duration, summon_race_id, summon_count) = match impact_type {
+
+        SpellImpactType::Damage => {
+            let dmg_type_id = impact_params.get(0).copied().unwrap_or(1);
+            let dmg_type = Some(damage_type_name(dmg_type_id));
+            let base = impact_params.get(1).copied();
+            let var = impact_params.get(2).copied();
+            let min = base.and_then(|b| var.map(|v| b - v));
+            let max = base.and_then(|b| var.map(|v| b + v));
+            (dmg_type, base, var, min, max, None, None, None, None)
+        },
+
+        SpellImpactType::Healing => {
+            let base = impact_params.get(0).copied();
+            let var = impact_params.get(1).copied();
+            let min = base.and_then(|b| var.map(|v| b - v));
+            let max = base.and_then(|b| var.map(|v| b + v));
+            (None, base, var, min, max, None, None, None, None)
+        },
+
+        SpellImpactType::Speed => {
+            let modifier = impact_params.get(0).copied();
+            let dur = impact_params.get(1).copied();
+            (None, None, None, None, None, modifier, dur, None, None)
+        },
+
+        SpellImpactType::Summon => {
+            let race_id = impact_params.get(0).copied();
+            let count = impact_params.get(1).copied();
+            (None, None, None, None, None, None, None, race_id, count)
+        },
+
+        _ => (None, None, None, None, None, None, None, None, None),
+    };
+
+    (range, area_size, angle, damage_type, base_value, variation, min_value, max_value,
+     speed_modifier, duration, summon_race_id, summon_count, effect_id, missile_effect_id)
+}
+
+/// Parse creature spells from .mon file.
+/// Returns a vector of CreatureSpell with human-readable interpretation.
+pub fn parse_creature_spells(text: &str) -> Result<Vec<CreatureSpell>> {
+    let spells_section_re = Regex::new(r"Spells\s*=\s*\{([^}]+)\}").unwrap();
+
+    if let Some(caps) = spells_section_re.captures(text) {
+        let content = caps.get(1).unwrap().as_str();
+        let spell_re = Regex::new(r"(\w+)\s*\(([^)]*)\)\s*->\s*(\w+)\s*\(([^)]*)\)\s*:\s*(\d+)").unwrap();
+        let mut spells = Vec::new();
+        let mut spell_order = 0;
+
+        for spell_match in spell_re.captures_iter(content) {
+            let shape_name = spell_match.get(1).unwrap().as_str();
+            let shape_params_str = spell_match.get(2).unwrap().as_str();
+            let impact_name = spell_match.get(3).unwrap().as_str();
+            let impact_params_str = spell_match.get(4).unwrap().as_str();
+
+            let priority: i32 = if let Ok(p) = spell_match.get(5).unwrap().as_str().parse::<i32>() {
+                p
+            } else {
+                continue;
+            };
+
+            let shape_type = match parse_spell_shape_type(shape_name) {
+                Some(st) => st,
+                None => continue,
+            };
+
+            let shape_params: Vec<i32> = shape_params_str
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .filter_map(|s| s.trim().parse::<i32>().ok())
+                .collect();
+
+            let impact_type = match parse_spell_impact_type(impact_name) {
+                Some(it) => it,
+                None => continue,
+            };
+
+            let impact_params: Vec<i32> = impact_params_str
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .filter_map(|s| s.trim().parse::<i32>().ok())
+                .collect();
+
+            // Interpret spell to get human-readable names
+            let (spell_name, spell_category, shape_name_readable, impact_name_readable) =
+                interpret_spell(shape_type, &shape_params, impact_type, &impact_params);
+
+            // Extract detailed parameters
+            let (range, area_size, angle, damage_type, base_value, variation, min_value, max_value,
+                 speed_modifier, duration, summon_race_id, summon_count, effect_id, missile_effect_id) =
+                extract_spell_details(shape_type, &shape_params, impact_type, &impact_params);
+
+            let raw_shape_params = serde_json::to_string(&shape_params).unwrap_or_else(|_| "[]".to_string());
+            let raw_impact_params = serde_json::to_string(&impact_params).unwrap_or_else(|_| "[]".to_string());
+
+            spells.push(CreatureSpell {
+                creature_id: 0,
+                spell_order,
+                spell_name,
+                spell_category,
+                shape_type,
+                shape_name: shape_name_readable,
+                range,
+                area_size,
+                angle,
+                impact_type,
+                impact_name: impact_name_readable,
+                damage_type,
+                base_value,
+                variation,
+                min_value,
+                max_value,
+                speed_modifier,
+                duration,
+                summon_race_id,
+                summon_count,
+                priority,
+                effect_id,
+                missile_effect_id,
+                raw_shape_params,
+                raw_impact_params,
+            });
+            spell_order += 1;
+        }
+
+        Ok(spells)
+    } else {
+        Ok(Vec::new())
+    }
 }
 
 /// Parse objects.srv file and extract item metadata.
@@ -947,6 +1319,122 @@ fn extract_vocations_from_line(line: &str) -> Vec<String> {
     }
 
     vocations
+}
+
+/// Parse .npc files to extract rune/wand/rod seller data
+///
+/// Looks for lines containing Type=, Price= with "rune", "wand", or "rod"
+/// keywords, extracting vocation restrictions from line prefixes or descriptions
+pub fn parse_npc_rune_selling(file_path: &Path) -> Result<Vec<RuneSeller>> {
+    let text = read_latin1_file(file_path)?;
+    let mut sellers = Vec::new();
+
+    // Extract NPC name (same pattern as spell teaching)
+    let name_re = Regex::new(r#"Name\s*=\s*"([^"]+)""#)
+        .map_err(|e| DemonaxError::Parse(format!("Regex error: {}", e)))?;
+
+    let npc_name = name_re.captures(&text)
+        .and_then(|cap| cap.get(1))
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_else(|| {
+            file_path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown")
+                .to_string()
+        });
+
+    // Account type from filename
+    let account_type = if let Some(name) = file_path.file_name().and_then(|s| s.to_str()) {
+        if name.contains("-free-") { Some("Free".to_string()) }
+        else if name.contains("-prem-") || name.contains("-max-") { Some("Premium".to_string()) }
+        else { None }
+    } else { None };
+
+    // Find selling lines: contains (rune OR wand OR rod) AND Type= AND Price=
+    // Skip bulk purchase lines (contain %1)
+    let selling_lines: Vec<&str> = text.lines()
+        .filter(|line| {
+            let lower = line.to_lowercase();
+            (lower.contains("rune") || lower.contains("wand") || lower.contains("rod")) &&
+            line.contains("Type=") && line.contains("Price=") && !line.contains("%1")
+        })
+        .collect();
+
+    for line in selling_lines {
+        // Extract Type, Price, Data using regex
+        let type_re = Regex::new(r"Type\s*=\s*(\d+)")
+            .map_err(|e| DemonaxError::Parse(format!("Regex error: {}", e)))?;
+        let price_re = Regex::new(r"Price\s*=\s*(\d+)")
+            .map_err(|e| DemonaxError::Parse(format!("Regex error: {}", e)))?;
+        let data_re = Regex::new(r"Data\s*=\s*(\d+)")
+            .map_err(|e| DemonaxError::Parse(format!("Regex error: {}", e)))?;
+
+        let item_id = match type_re.captures(line)
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse().ok()) {
+                Some(id) => id,
+                None => continue,
+            };
+
+        let price = match price_re.captures(line)
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse().ok()) {
+                Some(p) => p,
+                None => continue,
+            };
+
+        let charges = data_re.captures(line)
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse().ok());
+
+        // Item category
+        let lower = line.to_lowercase();
+        let item_category = if lower.contains("wand") { "wand" }
+            else if lower.contains("rod") { "rod" }
+            else { "rune" }.to_string();
+
+        // Extract vocations (same pattern as spell teaching)
+        let vocations = extract_rune_vocations(line);
+
+        for vocation in vocations {
+            sellers.push(RuneSeller {
+                npc_name: npc_name.clone(),
+                item_id,
+                spell_id: None,  // Set during DB insertion
+                vocation,
+                price,
+                charges,
+                account_type: account_type.clone(),
+                item_category: item_category.clone(),
+            });
+        }
+    }
+
+    Ok(sellers)
+}
+
+/// Extract vocation restrictions for rune/wand/rod purchases
+///
+/// Returns Vec<Option<String>> where:
+/// - Some("Vocation") = restricted to that vocation
+/// - None = available to all vocations
+fn extract_rune_vocations(line: &str) -> Vec<Option<String>> {
+    let lower = line.to_lowercase();
+
+    // Check line prefix (e.g., 'sorcerer,"wand"...')
+    if lower.starts_with("sorcerer,") { return vec![Some("Sorcerer".to_string())]; }
+    if lower.starts_with("druid,") { return vec![Some("Druid".to_string())]; }
+    if lower.starts_with("knight,") { return vec![Some("Knight".to_string())]; }
+    if lower.starts_with("paladin,") { return vec![Some("Paladin".to_string())]; }
+
+    // Check description text
+    if lower.contains("only for sorcerer") { return vec![Some("Sorcerer".to_string())]; }
+    if lower.contains("only for druid") { return vec![Some("Druid".to_string())]; }
+    if lower.contains("only for knight") { return vec![Some("Knight".to_string())]; }
+    if lower.contains("only for paladin") { return vec![Some("Paladin".to_string())]; }
+
+    // No restriction = available to all vocations
+    vec![None]
 }
 
 /// Parse .evt raid file

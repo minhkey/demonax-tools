@@ -1,7 +1,7 @@
 use crate::error::{DemonaxError, Result};
 use crate::file_utils;
 use crate::models::{
-    Bestiary, Creature, CreatureLoot, DailyQuest, DailySnapshot, ParsedUsrFile, Player, Skinning,
+    Creature, CreatureLoot, CreatureSpell, ParsedUsrFile,
 };
 use crate::parsers;
 use r2d2::{Pool, PooledConnection};
@@ -91,11 +91,11 @@ impl Database {
                 UNIQUE(snapshot_id, monster_id)
             );
 
-            CREATE TABLE IF NOT EXISTS skinning (
+            CREATE TABLE IF NOT EXISTS harvesting (
                 id INTEGER PRIMARY KEY,
                 snapshot_id INTEGER NOT NULL,
                 race_id INTEGER NOT NULL,
-                skin_count INTEGER NOT NULL,
+                harvest_count INTEGER NOT NULL,
                 FOREIGN KEY (snapshot_id) REFERENCES daily_snapshots(id) ON DELETE CASCADE,
                 UNIQUE(snapshot_id, race_id)
             );
@@ -131,6 +131,80 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_creature_loot_creature_id ON creature_loot(creature_id);
             CREATE INDEX IF NOT EXISTS idx_creature_loot_item_id ON creature_loot(item_id);
+
+            -- Creature flags table
+            CREATE TABLE IF NOT EXISTS creature_flags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                creature_id INTEGER NOT NULL,
+                flag_name TEXT NOT NULL,
+                FOREIGN KEY (creature_id) REFERENCES creatures(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_creature_flags_creature_id ON creature_flags(creature_id);
+
+            -- Creature skills table
+            CREATE TABLE IF NOT EXISTS creature_skills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                creature_id INTEGER NOT NULL,
+                skill_name TEXT NOT NULL,
+                skill_value INTEGER NOT NULL,
+                FOREIGN KEY (creature_id) REFERENCES creatures(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_creature_skills_creature_id ON creature_skills(creature_id);
+
+            -- Creature spells table
+            CREATE TABLE IF NOT EXISTS creature_spells (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                creature_id INTEGER NOT NULL,
+                spell_order INTEGER NOT NULL,
+
+                -- Human-readable fields
+                spell_name TEXT NOT NULL,
+                spell_category TEXT NOT NULL,
+
+                -- Shape details
+                shape_type INTEGER NOT NULL,
+                shape_name TEXT NOT NULL,
+                range INTEGER,
+                area_size TEXT,
+                angle INTEGER,
+
+                -- Impact details
+                impact_type INTEGER NOT NULL,
+                impact_name TEXT NOT NULL,
+
+                -- Damage/Healing specific
+                damage_type TEXT,
+                base_value INTEGER,
+                variation INTEGER,
+                min_value INTEGER,
+                max_value INTEGER,
+
+                -- Speed specific
+                speed_modifier INTEGER,
+                duration INTEGER,
+
+                -- Summon specific
+                summon_race_id INTEGER,
+                summon_count INTEGER,
+
+                -- Misc
+                priority INTEGER NOT NULL,
+                effect_id INTEGER,
+                missile_effect_id INTEGER,
+
+                -- Raw data (for debugging)
+                raw_shape_params TEXT NOT NULL,
+                raw_impact_params TEXT NOT NULL,
+
+                FOREIGN KEY (creature_id) REFERENCES creatures(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_creature_spells_creature_id ON creature_spells(creature_id);
+            CREATE INDEX IF NOT EXISTS idx_creature_spells_category ON creature_spells(spell_category);
+            CREATE INDEX IF NOT EXISTS idx_creature_spells_damage_type ON creature_spells(damage_type);
+            CREATE INDEX IF NOT EXISTS idx_creature_spells_missile_effect ON creature_spells(missile_effect_id);
 
             -- Item data schema
             CREATE TABLE IF NOT EXISTS items (
@@ -170,7 +244,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_item_prices_item_id ON item_prices(item_id);
             CREATE INDEX IF NOT EXISTS idx_item_prices_npc_name ON item_prices(npc_name);
 
-            -- Quest, raid, spell, skinning data schema
+            -- Quest, raid, spell, harvesting data schema
             CREATE TABLE IF NOT EXISTS quests (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -218,7 +292,7 @@ impl Database {
                 UNIQUE(npc_name, spell_id, vocation)
             );
 
-            CREATE TABLE IF NOT EXISTS skinning_data (
+            CREATE TABLE IF NOT EXISTS harvesting_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tool_id INTEGER NOT NULL,
                 corpse_id INTEGER NOT NULL,
@@ -229,12 +303,35 @@ impl Database {
                 UNIQUE(tool_id, corpse_id)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_skinning_data_tool_id ON skinning_data(tool_id);
-            CREATE INDEX IF NOT EXISTS idx_skinning_data_corpse_id ON skinning_data(corpse_id);
+            CREATE INDEX IF NOT EXISTS idx_harvesting_data_tool_id ON harvesting_data(tool_id);
+            CREATE INDEX IF NOT EXISTS idx_harvesting_data_corpse_id ON harvesting_data(corpse_id);
             CREATE INDEX IF NOT EXISTS idx_spell_teachers_spell_id ON spell_teachers(spell_id);
             CREATE INDEX IF NOT EXISTS idx_spell_teachers_npc_name ON spell_teachers(npc_name);
+
+            CREATE TABLE IF NOT EXISTS rune_sellers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                npc_name TEXT NOT NULL,
+                item_id INTEGER NOT NULL,
+                spell_id INTEGER,
+                vocation TEXT,
+                price INTEGER NOT NULL,
+                charges INTEGER,
+                account_type TEXT,
+                item_category TEXT NOT NULL CHECK(item_category IN ('rune', 'wand', 'rod')),
+                UNIQUE(npc_name, item_id, vocation)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rune_sellers_item_id ON rune_sellers(item_id);
+            CREATE INDEX IF NOT EXISTS idx_rune_sellers_spell_id ON rune_sellers(spell_id);
+            CREATE INDEX IF NOT EXISTS idx_rune_sellers_npc_name ON rune_sellers(npc_name);
             "#,
         )?;
+
+        // Migration: Rename skinning tables to harvesting (if they exist)
+        let _ = tx.execute("ALTER TABLE skinning RENAME TO harvesting", ());
+        let _ = tx.execute("ALTER TABLE skinning_data RENAME TO harvesting_data", ());
+        let _ = tx.execute("DROP INDEX IF EXISTS idx_skinning_data_tool_id", ());
+        let _ = tx.execute("DROP INDEX IF EXISTS idx_skinning_data_corpse_id", ());
 
         tx.commit()?;
         Ok(())
@@ -346,12 +443,12 @@ impl Database {
         Ok(())
     }
 
-    /// Insert skinning entries.
-    fn insert_skinning(&self, conn: &Connection, snapshot_id: i32, parsed: &ParsedUsrFile) -> Result<()> {
-        for entry in &parsed.skinning {
+    /// Insert harvesting entries.
+    fn insert_harvesting(&self, conn: &Connection, snapshot_id: i32, parsed: &ParsedUsrFile) -> Result<()> {
+        for entry in &parsed.harvesting {
             conn.execute(
-                "INSERT INTO skinning (snapshot_id, race_id, skin_count) VALUES (?, ?, ?)",
-                params![snapshot_id, entry.race_id, entry.skin_count],
+                "INSERT INTO harvesting (snapshot_id, race_id, harvest_count) VALUES (?, ?, ?)",
+                params![snapshot_id, entry.race_id, entry.harvest_count],
             )?;
         }
         Ok(())
@@ -365,7 +462,7 @@ impl Database {
         snapshot_date: &str,
     ) -> Result<bool> {
         let mut conn = self.connection()?;
-        let mut tx = conn.transaction()?;
+        let tx = conn.transaction()?;
 
         let player_id = self.insert_or_update_player(&tx, &parsed.skills.name, snapshot_date)?;
 
@@ -378,7 +475,7 @@ impl Database {
         let snapshot_id = self.insert_daily_snapshot(&tx, player_id, snapshot_date, parsed)?;
         self.insert_daily_quests(&tx, snapshot_id, parsed)?;
         self.insert_bestiary(&tx, snapshot_id, parsed)?;
-        self.insert_skinning(&tx, snapshot_id, parsed)?;
+        self.insert_harvesting(&tx, snapshot_id, parsed)?;
 
         tx.commit()?;
         Ok(true)
@@ -523,6 +620,95 @@ impl Database {
         Ok(())
     }
 
+    /// Insert creature flags, replacing any existing flags for this creature.
+    fn insert_creature_flags(&self, conn: &Connection, creature_id: i32, flags: &[String]) -> Result<()> {
+        // Delete existing flags
+        conn.execute(
+            "DELETE FROM creature_flags WHERE creature_id = ?",
+            params![creature_id],
+        )?;
+
+        // Insert new flags
+        for flag in flags {
+            conn.execute(
+                "INSERT INTO creature_flags (creature_id, flag_name) VALUES (?, ?)",
+                params![creature_id, flag],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Insert creature skills, replacing any existing skills for this creature.
+    fn insert_creature_skills(&self, conn: &Connection, creature_id: i32, skills: &[(String, i32)]) -> Result<()> {
+        // Delete existing skills
+        conn.execute(
+            "DELETE FROM creature_skills WHERE creature_id = ?",
+            params![creature_id],
+        )?;
+
+        // Insert new skills
+        for (skill_name, skill_value) in skills {
+            conn.execute(
+                "INSERT INTO creature_skills (creature_id, skill_name, skill_value) VALUES (?, ?, ?)",
+                params![creature_id, skill_name, skill_value],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Insert creature spells, replacing any existing spells for this creature.
+    fn insert_creature_spells(&self, conn: &Connection, creature_id: i32, spells: &[CreatureSpell]) -> Result<()> {
+        // Delete existing spells
+        conn.execute(
+            "DELETE FROM creature_spells WHERE creature_id = ?",
+            params![creature_id],
+        )?;
+
+        // Insert new spells
+        for spell in spells {
+            conn.execute(
+                "INSERT INTO creature_spells (
+                    creature_id, spell_order, spell_name, spell_category,
+                    shape_type, shape_name, range, area_size, angle,
+                    impact_type, impact_name,
+                    damage_type, base_value, variation, min_value, max_value,
+                    speed_modifier, duration,
+                    summon_race_id, summon_count,
+                    priority, effect_id, missile_effect_id,
+                    raw_shape_params, raw_impact_params
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    creature_id,
+                    spell.spell_order,
+                    &spell.spell_name,
+                    &spell.spell_category,
+                    spell.shape_type as i32,
+                    &spell.shape_name,
+                    spell.range,
+                    spell.area_size.as_ref(),
+                    spell.angle,
+                    spell.impact_type as i32,
+                    &spell.impact_name,
+                    spell.damage_type.as_ref(),
+                    spell.base_value,
+                    spell.variation,
+                    spell.min_value,
+                    spell.max_value,
+                    spell.speed_modifier,
+                    spell.duration,
+                    spell.summon_race_id,
+                    spell.summon_count,
+                    spell.priority,
+                    spell.effect_id,
+                    spell.missile_effect_id,
+                    &spell.raw_shape_params,
+                    &spell.raw_impact_params,
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Process .mon files from a directory.
     /// Returns number of successfully processed files.
     pub fn process_mon_files(
@@ -582,6 +768,96 @@ impl Database {
 
                     match self.insert_or_update_creature(&tx, &creature) {
                         Ok(creature_id) => {
+                            // Read file text for parsing flags
+                            let text = match file_utils::read_latin1_file(&file_path) {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    error_count += 1;
+                                    if quiet < 2 {
+                                        tracing::warn!("Failed to read file {}: {}", creature.name, e);
+                                    }
+                                    tx.rollback()?;
+                                    continue;
+                                }
+                            };
+
+                            // Parse and insert flags
+                            match parsers::parse_creature_flags(&text) {
+                                Ok(flags) => {
+                                    if !flags.is_empty() {
+                                        if let Err(e) = self.insert_creature_flags(&tx, creature_id, &flags) {
+                                            error_count += 1;
+                                            if quiet < 2 {
+                                                tracing::warn!("Failed to insert flags for {}: {}", creature.name, e);
+                                            }
+                                            tx.rollback()?;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error_count += 1;
+                                    if quiet < 2 {
+                                        tracing::warn!("Failed to parse flags for {}: {}", creature.name, e);
+                                    }
+                                    tx.rollback()?;
+                                    continue;
+                                }
+                            }
+
+                            // Parse and insert skills
+                            match parsers::parse_creature_skills(&text) {
+                                Ok(skills) => {
+                                    if !skills.is_empty() {
+                                        if let Err(e) = self.insert_creature_skills(&tx, creature_id, &skills) {
+                                            error_count += 1;
+                                            if quiet < 2 {
+                                                tracing::warn!("Failed to insert skills for {}: {}", creature.name, e);
+                                            }
+                                            tx.rollback()?;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error_count += 1;
+                                    if quiet < 2 {
+                                        tracing::warn!("Failed to parse skills for {}: {}", creature.name, e);
+                                    }
+                                    tx.rollback()?;
+                                    continue;
+                                }
+                            }
+
+                            // Parse and insert spells
+                            match parsers::parse_creature_spells(&text) {
+                                Ok(mut spells) => {
+                                    if !spells.is_empty() {
+                                        // Set creature_id for each spell
+                                        for spell in &mut spells {
+                                            spell.creature_id = creature_id;
+                                        }
+
+                                        if let Err(e) = self.insert_creature_spells(&tx, creature_id, &spells) {
+                                            error_count += 1;
+                                            if quiet < 2 {
+                                                tracing::warn!("Failed to insert spells for {}: {}", creature.name, e);
+                                            }
+                                            tx.rollback()?;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error_count += 1;
+                                    if quiet < 2 {
+                                        tracing::warn!("Failed to parse spells for {}: {}", creature.name, e);
+                                    }
+                                    tx.rollback()?;
+                                    continue;
+                                }
+                            }
+
                             // Parse loot
                             match parsers::parse_creature_loot(&file_path) {
                                 Ok(loot) => {
@@ -923,6 +1199,95 @@ impl Database {
         Ok(inserted_count)
     }
 
+    /// Clear and insert rune seller data, linking to spells where applicable
+    ///
+    /// For runes, looks up spell_id by matching item_id to rune_type_id in spells table
+    pub fn clear_and_insert_rune_sellers(
+        &self,
+        sellers: &[crate::models::RuneSeller]
+    ) -> Result<usize> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction()?;
+
+        // Clear existing rune sellers
+        tx.execute("DELETE FROM rune_sellers", ())?;
+
+        let mut inserted_count = 0;
+        for seller in sellers {
+            // For runes, lookup spell_id by matching item_id to rune_type_id
+            let spell_id = if seller.item_category == "rune" {
+                tx.query_row(
+                    "SELECT id FROM spells WHERE rune_type_id = ?1",
+                    (seller.item_id,),
+                    |row| row.get::<_, i32>(0),
+                ).ok()
+            } else {
+                None
+            };
+
+            tx.execute(
+                "INSERT INTO rune_sellers (npc_name, item_id, spell_id, vocation, price, charges, account_type, item_category)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(npc_name, item_id, vocation) DO UPDATE SET
+                    spell_id = excluded.spell_id,
+                    price = excluded.price,
+                    charges = excluded.charges,
+                    account_type = excluded.account_type,
+                    item_category = excluded.item_category",
+                (
+                    &seller.npc_name,
+                    seller.item_id,
+                    spell_id,
+                    &seller.vocation,
+                    seller.price,
+                    seller.charges,
+                    &seller.account_type,
+                    &seller.item_category,
+                ),
+            )?;
+            inserted_count += 1;
+        }
+
+        tx.commit()?;
+        Ok(inserted_count)
+    }
+
+    /// Get rune spells that have no sellers in rune_sellers table
+    pub fn get_unsold_runes(&self) -> Result<Vec<crate::models::Spell>> {
+        let conn = self.connection()?;
+
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.name, s.words, s.level, s.magic_level, s.mana,
+                    s.soul_points, s.flags, s.is_rune, s.rune_type_id,
+                    s.charges, s.spell_type, s.premium
+             FROM spells s
+             LEFT JOIN rune_sellers rs ON s.id = rs.spell_id
+             WHERE s.is_rune = 1 AND rs.spell_id IS NULL
+             ORDER BY s.level, s.name"
+        )?;
+
+        let spells = stmt.query_map([], |row| {
+            Ok(crate::models::Spell {
+                spell_id: row.get(0)?,
+                name: row.get(1)?,
+                words: row.get(2)?,
+                level: row.get(3)?,
+                magic_level: row.get(4)?,
+                mana: row.get(5)?,
+                soul_points: row.get(6)?,
+                flags: row.get(7)?,
+                is_rune: row.get(8)?,
+                rune_type_id: row.get(9)?,
+                charges: row.get(10)?,
+                spell_type: row.get(11)?,
+                premium: row.get(12)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(spells)
+    }
+
     /// Get spells that have no teachers
     pub fn get_untaught_spells(&self) -> Result<Vec<crate::models::Spell>> {
         let conn = self.connection()?;
@@ -959,20 +1324,20 @@ impl Database {
         Ok(spells)
     }
 
-    /// Insert skinning data into database
-    pub fn insert_skinning_data(&self, skinning: &[crate::models::SkinningData]) -> Result<usize> {
+    /// Insert harvesting data into database
+    pub fn insert_harvesting_data(&self, harvesting: &[crate::models::HarvestingData]) -> Result<usize> {
         let mut conn = self.connection()?;
         let tx = conn.transaction()?;
 
-        // Clear existing skinning data
-        tx.execute("DELETE FROM skinning_data", ())?;
+        // Clear existing harvesting data
+        tx.execute("DELETE FROM harvesting_data", ())?;
 
         let mut inserted_count = 0;
 
-        for entry in skinning {
+        for entry in harvesting {
             tx.execute(
-                "INSERT INTO skinning_data (tool_id, corpse_id, next_corpse_id,
-                                            percent_chance, reward_id, race_id)
+                "INSERT INTO harvesting_data (tool_id, corpse_id, next_corpse_id,
+                                               percent_chance, reward_id, race_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 (
                     entry.tool_id,

@@ -2,10 +2,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use demonax_core::database::Database;
 use demonax_core::file_utils::find_files_with_extension;
-use demonax_core::parsers::{parse_evt_file, parse_magic_cc, parse_map_sector_file, parse_npc_file, parse_npc_spell_teaching, parse_objects_srv};
-use demonax_core::models::SkinningData;
+use demonax_core::parsers::{parse_evt_file, parse_magic_cc, parse_map_sector_file, parse_npc_file, parse_npc_rune_selling, parse_npc_spell_teaching, parse_objects_srv};
+use demonax_core::models::HarvestingData;
 use rayon::prelude::*;
-use std::io::Write;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -113,14 +112,14 @@ enum Commands {
         quiet: u8,
     },
 
-    /// Update skinning data
-    UpdateSkinning {
-        /// Game directory with skinning files
+    /// Update harvesting data
+    UpdateHarvesting {
+        /// Game directory with harvesting files
         #[arg(long, default_value = "/home/cmd/tibia_local/game")]
         game_path: std::path::PathBuf,
-        /// Custom path to skinning.csv (optional)
+        /// Custom path to harvesting.csv (optional)
         #[arg(long)]
-        skinning_csv: Option<std::path::PathBuf>,
+        harvesting_csv: Option<std::path::PathBuf>,
         /// Web directory for output files
         #[arg(long, default_value = "/home/cmd/Documents/demonax/demonax-web")]
         web_path: std::path::PathBuf,
@@ -398,64 +397,64 @@ async fn main() -> Result<()> {
                 info!("Note: Creature names can be enriched by querying creatures table");
             }
         }
-        Commands::UpdateSkinning { game_path, skinning_csv, web_path: _, quiet } => {
+        Commands::UpdateHarvesting { game_path, harvesting_csv, web_path: _, quiet } => {
             let db_path = cli.database.unwrap_or_else(|| std::path::PathBuf::from("./demonax.sqlite"));
             let db = Database::new(&db_path)?;
 
             if quiet == 0 {
-                info!("Processing skinning data");
+                info!("Processing harvesting data");
             }
 
             // Use custom path if provided, otherwise search common locations
-            let skinning_csv_path = if let Some(custom_path) = skinning_csv {
+            let harvesting_csv_path = if let Some(custom_path) = harvesting_csv {
                 if custom_path.exists() {
                     Some(custom_path)
                 } else {
-                    anyhow::bail!("Custom skinning CSV path does not exist: {:?}", custom_path);
+                    anyhow::bail!("Custom harvesting CSV path does not exist: {:?}", custom_path);
                 }
             } else {
                 let possible_paths = vec![
-                    game_path.join("skinning.csv"),
-                    game_path.join("dat/skinning.csv"),
-                    std::path::PathBuf::from("./skinning.csv"),
+                    game_path.join("harvesting.csv"),
+                    game_path.join("dat/harvesting.csv"),
+                    std::path::PathBuf::from("./harvesting.csv"),
                 ];
                 possible_paths.iter().find(|p| p.exists()).cloned()
             };
 
-            if let Some(csv_path) = skinning_csv_path {
+            if let Some(csv_path) = harvesting_csv_path {
                 if quiet == 0 {
-                    info!("Reading skinning data from {:?}", csv_path);
+                    info!("Reading harvesting data from {:?}", csv_path);
                 }
 
-                // Read skinning CSV
+                // Read harvesting CSV
                 let mut reader = csv::Reader::from_path(&csv_path)?;
-                let mut skinning_data = Vec::new();
+                let mut harvesting_data = Vec::new();
 
                 for result in reader.deserialize() {
-                    let record: SkinningData = result?;
-                    skinning_data.push(record);
+                    let record: HarvestingData = result?;
+                    harvesting_data.push(record);
                 }
 
                 if quiet == 0 {
-                    info!("Parsed {} skinning entries from CSV", skinning_data.len());
+                    info!("Parsed {} harvesting entries from CSV", harvesting_data.len());
                 }
 
                 // Insert into database
-                let inserted = db.insert_skinning_data(&skinning_data)?;
+                let inserted = db.insert_harvesting_data(&harvesting_data)?;
 
                 if quiet == 0 {
-                    info!("Inserted {} skinning entries into database", inserted);
+                    info!("Inserted {} harvesting entries into database", inserted);
                 }
 
                 // Note: The R implementation also writes to moveuse.dat file
                 // For now, we store in database only. moveuse.dat generation
                 // can be added as a separate command if needed.
                 if quiet == 0 {
-                    info!("Skinning data stored in database: {:?}", db_path);
+                    info!("Harvesting data stored in database: {:?}", db_path);
                     info!("Note: moveuse.dat file generation not implemented (data in DB only)");
                 }
             } else {
-                anyhow::bail!("skinning.csv not found in any standard location");
+                anyhow::bail!("harvesting.csv not found in any standard location");
             }
         }
         Commands::UpdateSpells { game_path, magic_cc, web_path: _, quiet } => {
@@ -538,6 +537,37 @@ async fn main() -> Result<()> {
                 if quiet == 0 {
                     info!("Processed {} spell teachers", teacher_count);
                 }
+
+                // Parse rune/wand/rod sellers
+                if quiet == 0 {
+                    info!("Parsing .npc files for rune/wand/rod seller data");
+                }
+
+                let all_sellers: Vec<_> = npc_files
+                    .par_iter()
+                    .filter_map(|path| {
+                        match parse_npc_rune_selling(path) {
+                            Ok(sellers) if !sellers.is_empty() => Some(sellers),
+                            Ok(_) => None,
+                            Err(e) => {
+                                if quiet < 2 {
+                                    tracing::warn!("Failed to parse rune sellers from {:?}: {}", path, e);
+                                }
+                                None
+                            }
+                        }
+                    })
+                    .flatten()
+                    .collect();
+
+                if quiet == 0 {
+                    info!("Found {} rune/wand/rod seller entries", all_sellers.len());
+                }
+
+                let seller_count = db.clear_and_insert_rune_sellers(&all_sellers)?;
+                if quiet == 0 {
+                    info!("Processed {} rune/wand/rod sellers", seller_count);
+                }
             }
 
             // Log untaught spells
@@ -554,6 +584,22 @@ async fn main() -> Result<()> {
                             spell.words,
                             spell.level,
                             spell.mana
+                        );
+                    }
+                }
+
+                // Log unsold runes
+                let unsold_runes = db.get_unsold_runes()?;
+
+                if !unsold_runes.is_empty() {
+                    info!("Found {} runes without sellers:", unsold_runes.len());
+                    for rune in unsold_runes {
+                        info!(
+                            "  - {} (ID: {}): {} - Rune Type ID: {:?}",
+                            rune.name,
+                            rune.spell_id,
+                            rune.words,
+                            rune.rune_type_id
                         );
                     }
                 }

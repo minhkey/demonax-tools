@@ -12,7 +12,7 @@ Demonax Tools processes various game data files including:
 - Map sectors and quest locations (.sec files)
 - Raid events (.evt files)
 - Spell definitions (magic.cc source code)
-- Skinning mechanics (CSV data)
+- Harvesting mechanics (CSV data)
 
 All data is stored in a SQLite database with a well-structured schema for efficient querying and web rendering.
 
@@ -76,7 +76,7 @@ Parse .usr player files and store character snapshots in the database.
 demonax [--database <DB>] process-usr --input-dir <DIR> --snapshot-date <DATE> [--quiet <0-4>]
 ```
 
-**Purpose:** Extract player statistics, skills, equipment, quest progress, bestiary kills, and skinning data from .usr files.
+**Purpose:** Extract player statistics, skills, equipment, quest progress, bestiary kills, and harvesting data from .usr files.
 
 **Inputs:**
 - `--input-dir`: Directory containing .usr files (typically `game/usr` with subdirectories 00-99)
@@ -89,7 +89,7 @@ demonax [--database <DB>] process-usr --input-dir <DIR> --snapshot-date <DATE> [
   - `daily_snapshots`: Stats snapshot (level, experience, magic level, skills, equipment)
   - `daily_quests`: Quest completion flags
   - `bestiary`: Monster kill counts
-  - `skinning`: Skinning progress per race
+  - `harvesting`: Harvesting progress per race
 
 **Performance:** < 5 seconds for 18 player files
 
@@ -282,45 +282,45 @@ demonax --database ./demonax.sqlite update-raids \
 
 ---
 
-### 7. update-skinning - Process Skinning Mechanics
+### 7. update-harvesting - Process Harvesting Mechanics
 
-Load skinning recipe data (which tools skin which corpses for which rewards).
+Load harvesting recipe data (which tools harvest which corpses for which rewards).
 
 **Syntax:**
 ```bash
-demonax update-skinning [--skinning-csv <PATH>] [--game-path <DIR>] [--quiet <0-4>]
+demonax update-harvesting [--harvesting-csv <PATH>] [--game-path <DIR>] [--quiet <0-4>]
 ```
 
-**Purpose:** Load skinning mechanics from CSV file defining tool/corpse/reward relationships.
+**Purpose:** Load harvesting mechanics from CSV file defining tool/corpse/reward relationships.
 
 **Inputs:**
-- `--skinning-csv`: Custom path to skinning.csv (optional)
-- `--game-path`: Game directory to search for skinning.csv if custom path not provided
+- `--harvesting-csv`: Custom path to harvesting.csv (optional)
+- `--game-path`: Game directory to search for harvesting.csv if custom path not provided
 - Searches standard locations if neither provided:
-  - `game-path/skinning.csv`
-  - `game-path/dat/skinning.csv`
-  - `./skinning.csv`
+  - `game-path/harvesting.csv`
+  - `game-path/dat/harvesting.csv`
+  - `./harvesting.csv`
 - CSV format: `tool_id,corpse_id,next_corpse_id,percent_chance,reward_id,race_id`
 
 **Outputs:**
 - Database table:
-  - `skinning_data`: Tool ID, corpse ID, next corpse ID, percent chance, reward ID, race ID
+  - `harvesting_data`: Tool ID, corpse ID, next corpse ID, percent chance, reward ID, race ID
 
 **Performance:** < 1 second
 
 **Example:**
 ```bash
-demonax --database ./demonax.sqlite update-skinning \
-  --skinning-csv ~/repos/demonax-data/csv/skinning.csv
+demonax --database ./demonax.sqlite update-harvesting \
+  --harvesting-csv ~/repos/demonax-data/csv/harvesting.csv
 ```
 
-**Test Output:** 26 skinning recipes
+**Test Output:** 26 harvesting recipes
 
 **Data Notes:**
-- Custom path argument allows skinning.csv to be stored outside game directory
+- Custom path argument allows harvesting.csv to be stored outside game directory
 - Tool IDs are item type IDs (e.g., 3007 for obsidian knife)
 - Corpse IDs are item type IDs for dead creature corpses
-- Reward IDs are item type IDs obtained from skinning
+- Reward IDs are item type IDs obtained from harvesting
 
 ---
 
@@ -347,8 +347,9 @@ demonax update-spells [--magic-cc <PATH>] --game-path <DIR> [--quiet <0-4>]
 
 **Outputs:**
 - Database tables:
-  - `spells`: Spell ID, name, magic words, level, mana, spell type, premium flag
+  - `spells`: Spell ID, name, magic words, level, mana, spell type, premium flag, rune info
   - `spell_teachers`: NPC name, spell name, spell ID, vocation, price, level required
+  - `rune_sellers`: NPC name, item ID, spell ID (for runes), vocation, price, charges, account type, item category (rune/wand/rod)
 
 **Performance:** < 1 second for magic.cc, ~1 second for .npc parsing
 
@@ -359,13 +360,16 @@ demonax --database ./demonax.sqlite update-spells \
   --game-path /home/cmd/tibia_local/game
 ```
 
-**Test Output:** 108 spells, 637 spell teachers
+**Test Output:** 108 spells, 637 spell teachers, 69 rune/wand/rod sellers
 
 **Data Notes:**
 - Custom magic.cc path useful when source code is in separate repository
 - Works without magic.cc (spell teaching from .npc files only)
 - Spell types: healing, damage, support, rune, etc.
 - Vocation filtering: knight, paladin, sorcerer, druid
+- Rune sellers linked to spell definitions via `rune_type_id` matching
+- Wands restricted to sorcerers, rods restricted to druids (when vocation specified)
+- Account type detection (Free/Premium) from NPC filename patterns
 
 ---
 
@@ -384,7 +388,7 @@ demonax update-items-quests --game-path /path/to/game
 
 # Stage 3: Independent game data (can run in any order)
 demonax update-raids --game-path /path/to/game
-demonax update-skinning --skinning-csv /path/to/skinning.csv
+demonax update-harvesting --harvesting-csv /path/to/harvesting.csv
 demonax update-spells --magic-cc /path/to/magic.cc --game-path /path/to/game
 
 # Stage 4: Player data (can reference creatures/items)
@@ -439,11 +443,11 @@ bestiary (
   FOREIGN KEY (snapshot_id) REFERENCES daily_snapshots(id) ON DELETE CASCADE
 )
 
-skinning (
+harvesting (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   snapshot_id INTEGER NOT NULL,
   race_id INTEGER NOT NULL,
-  skin_count INTEGER NOT NULL,
+  harvest_count INTEGER NOT NULL,
   FOREIGN KEY (snapshot_id) REFERENCES daily_snapshots(id) ON DELETE CASCADE
 )
 
@@ -511,7 +515,7 @@ raids (
   spawn_composition_json TEXT NOT NULL DEFAULT '[]'
 )
 
-skinning_data (
+harvesting_data (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tool_id INTEGER NOT NULL,
   corpse_id INTEGER NOT NULL,
@@ -548,6 +552,19 @@ spell_teachers (
   level_required INTEGER,
   UNIQUE(npc_name, spell_id, vocation)
 )
+
+rune_sellers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  npc_name TEXT NOT NULL,
+  item_id INTEGER NOT NULL,
+  spell_id INTEGER,
+  vocation TEXT,
+  price INTEGER NOT NULL,
+  charges INTEGER,
+  account_type TEXT,
+  item_category TEXT NOT NULL CHECK(item_category IN ('rune', 'wand', 'rod')),
+  UNIQUE(npc_name, item_id, vocation)
+)
 ```
 
 ### Key Relationships
@@ -555,11 +572,12 @@ spell_teachers (
 - `daily_snapshots.player_id` → `players.id`
 - `daily_quests.snapshot_id` → `daily_snapshots.id`
 - `bestiary.snapshot_id` → `daily_snapshots.id`
-- `skinning.snapshot_id` → `daily_snapshots.id`
+- `harvesting.snapshot_id` → `daily_snapshots.id`
 - `creature_loot.creature_id` → `creatures.id`
 - `spell_teachers.spell_id` → `spells.id`
+- `rune_sellers.spell_id` → `spells.id` (for runes only, NULL for wands/rods)
 
-**Note:** Some relationships use item type IDs directly rather than foreign keys (e.g., `item_prices.item_id` references `items.type_id`, not `items.id`) to match game file formats.
+**Note:** Some relationships use item type IDs directly rather than foreign keys (e.g., `item_prices.item_id` references `items.type_id`, not `items.id`, and `rune_sellers.item_id` references item type IDs) to match game file formats.
 
 ---
 
@@ -740,6 +758,43 @@ SELECT npc_name, COUNT(*) as spells_taught
 FROM spell_teachers
 GROUP BY npc_name
 ORDER BY spells_taught DESC;
+
+-- Rune sellers with spell information
+SELECT rs.npc_name, rs.item_id, s.name as spell_name, s.words, rs.price, rs.charges, rs.vocation
+FROM rune_sellers rs
+LEFT JOIN spells s ON rs.spell_id = s.id
+WHERE rs.item_category = 'rune'
+ORDER BY rs.price;
+
+-- Wands and rods by NPC
+SELECT npc_name, item_id, item_category, vocation, price, account_type
+FROM rune_sellers
+WHERE item_category IN ('wand', 'rod')
+ORDER BY price DESC;
+
+-- Compare spell teaching price vs rune buying price
+SELECT s.name, s.words,
+       MIN(st.price) as teach_price,
+       MIN(rs.price) as rune_price
+FROM spells s
+LEFT JOIN spell_teachers st ON s.id = st.spell_id
+LEFT JOIN rune_sellers rs ON s.id = rs.spell_id
+WHERE s.is_rune = 1
+GROUP BY s.id
+HAVING teach_price IS NOT NULL OR rune_price IS NOT NULL;
+
+-- Runes by vocation restriction
+SELECT vocation, COUNT(*) as rune_count
+FROM rune_sellers
+WHERE item_category = 'rune'
+GROUP BY vocation;
+
+-- Find cheapest NPC for a specific rune
+SELECT rs.npc_name, rs.price, rs.charges, s.name
+FROM rune_sellers rs
+JOIN spells s ON rs.spell_id = s.id
+WHERE s.name LIKE '%Healing%'
+ORDER BY rs.price ASC;
 ```
 
 ### Raid & Quest Information
@@ -769,22 +824,22 @@ WHERE rewards LIKE '%3031%'  -- Contains gold coins
 LIMIT 20;
 ```
 
-### Skinning Mechanics
+### Harvesting Mechanics
 
 ```sql
--- All skinning recipes
+-- All harvesting recipes
 SELECT tool_id, corpse_id, next_corpse_id, percent_chance, reward_id, race_id
-FROM skinning_data
+FROM harvesting_data
 ORDER BY percent_chance DESC;
 
--- Skinning recipes by tool
+-- Harvesting recipes by tool
 SELECT tool_id, COUNT(*) as recipes
-FROM skinning_data
+FROM harvesting_data
 GROUP BY tool_id;
 
--- Find what rewards come from skinning a specific corpse
+-- Find what rewards come from harvesting a specific corpse
 SELECT corpse_id, reward_id, percent_chance
-FROM skinning_data
+FROM harvesting_data
 WHERE corpse_id = 3101  -- Example corpse ID
 ORDER BY percent_chance DESC;
 ```
@@ -814,7 +869,7 @@ This script:
 - 1 objects.srv + 352 .npc files (items and prices)
 - 10,538 .sec files (map sectors for quests)
 - 35 .evt files (raids)
-- 1 skinning.csv (26 recipes)
+- 1 harvesting.csv (26 recipes)
 - 1 magic.cc + 352 .npc files (spells and teaching)
 - 18 .usr files (players)
 
@@ -831,8 +886,8 @@ Based on test data in `DEV/game/`:
 | update-quest-overview | 10,538 .sec       | 0.06s | 259 quests                 |
 | update-items-quests | DB operation        | 0.02s | Updates items.rewarded_from|
 | update-raids        | 35 .evt             | 0.3s  | 34 raids                   |
-| update-skinning     | 1 CSV               | 0.02s | 26 recipes                 |
-| update-spells       | 1 .cc + 352 .npc    | 0.95s | 108 spells, 637 teachers   |
+| update-harvesting   | 1 CSV               | 0.02s | 26 recipes                 |
+| update-spells       | 1 .cc + 352 .npc    | 0.95s | 108 spells, 637 teachers, 69 rune/wand/rod sellers |
 | process-usr         | 18 .usr             | 0.25s | 18 players, 18 snapshots   |
 
 **Total:** ~9 seconds, ~50-100 MB database (depending on loot/quest data volume)
