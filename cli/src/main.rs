@@ -4,6 +4,7 @@ use demonax_core::database::Database;
 use demonax_core::file_utils::find_files_with_extension;
 use demonax_core::parsers::{parse_evt_file, parse_magic_cc, parse_map_sector_file, parse_npc_file, parse_npc_rune_selling, parse_npc_spell_teaching, parse_objects_srv};
 use demonax_core::models::HarvestingData;
+use demonax_core::{generate_all_harvesting_rules, insert_harvesting_rules};
 use rayon::prelude::*;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -142,6 +143,16 @@ enum Commands {
         /// Quiet mode
         #[arg(long, default_value_t = 0)]
         quiet: u8,
+    },
+
+    /// Update moveuse.dat with harvesting rules from CSV
+    UpdateMoveUseHarvesting {
+        /// Path to harvesting.csv
+        #[arg(long)]
+        csv_path: std::path::PathBuf,
+        /// Path to moveuse.dat to update
+        #[arg(long)]
+        moveuse_path: std::path::PathBuf,
     },
 }
 
@@ -608,6 +619,44 @@ async fn main() -> Result<()> {
             if quiet == 0 {
                 info!("Spell processing complete. Data stored in database: {:?}", db_path);
             }
+        }
+        Commands::UpdateMoveUseHarvesting { csv_path, moveuse_path } => {
+            info!("Updating moveuse.dat with harvesting rules");
+
+            // Check paths exist
+            if !csv_path.exists() {
+                anyhow::bail!("CSV file not found: {:?}", csv_path);
+            }
+            if !moveuse_path.exists() {
+                anyhow::bail!("moveuse.dat not found: {:?}", moveuse_path);
+            }
+
+            // Read and parse CSV
+            info!("Reading harvesting data from {:?}", csv_path);
+            let mut reader = csv::Reader::from_path(&csv_path)?;
+            let mut harvesting_data = Vec::new();
+
+            for result in reader.deserialize() {
+                let record: HarvestingData = result?;
+                harvesting_data.push(record);
+            }
+
+            info!("Parsed {} harvesting entries from CSV", harvesting_data.len());
+
+            // Generate rules
+            let rules = generate_all_harvesting_rules(&harvesting_data);
+            info!("Generated {} rule pairs ({} lines)", harvesting_data.len(), rules.lines().count());
+
+            // Read moveuse.dat
+            let moveuse_content = std::fs::read_to_string(&moveuse_path)?;
+
+            // Insert rules
+            let updated_content = insert_harvesting_rules(&moveuse_content, &rules)?;
+
+            // Write back
+            std::fs::write(&moveuse_path, updated_content)?;
+
+            info!("Successfully updated {:?} with harvesting rules", moveuse_path);
         }
     }
 
