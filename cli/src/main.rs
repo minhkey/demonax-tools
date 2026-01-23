@@ -5,6 +5,7 @@ use demonax_core::file_utils::find_files_with_extension;
 use demonax_core::parsers::{parse_evt_file, parse_magic_cc, parse_map_sector_file, parse_npc_file, parse_npc_rune_selling, parse_npc_spell_teaching, parse_objects_srv};
 use demonax_core::models::HarvestingData;
 use demonax_core::{generate_all_harvesting_rules, insert_harvesting_rules};
+use demonax_core::present::{apply_present_to_file, GiftResult, GiftSummary, PresentConfig};
 use rayon::prelude::*;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -153,6 +154,29 @@ enum Commands {
         /// Path to moveuse.dat to update
         #[arg(long)]
         moveuse_path: std::path::PathBuf,
+    },
+
+    /// Give presents to players by modifying .usr files
+    GivePresent {
+        /// Path to usr/ directory containing player files
+        #[arg(long)]
+        usr_path: std::path::PathBuf,
+
+        /// Path to TOML file defining present contents
+        #[arg(long)]
+        present_config: std::path::PathBuf,
+
+        /// Inventory slot to place present (default: 10)
+        #[arg(long, default_value_t = 10)]
+        target_slot: i32,
+
+        /// Show what would be done without modifying files
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+
+        /// Quiet mode (0=show messages/warnings, 1=suppress messages, 2=suppress both)
+        #[arg(long, default_value_t = 0)]
+        quiet: u8,
     },
 }
 
@@ -657,6 +681,86 @@ async fn main() -> Result<()> {
             std::fs::write(&moveuse_path, updated_content)?;
 
             info!("Successfully updated {:?} with harvesting rules", moveuse_path);
+        }
+        Commands::GivePresent { usr_path, present_config, target_slot, dry_run, quiet } => {
+            if quiet == 0 {
+                if dry_run {
+                    info!("Giving presents (DRY RUN) from {:?}", present_config);
+                } else {
+                    info!("Giving presents from {:?}", present_config);
+                }
+            }
+
+            // Validate paths
+            if !usr_path.exists() {
+                anyhow::bail!("usr path not found: {:?}", usr_path);
+            }
+            if !present_config.exists() {
+                anyhow::bail!("Present config not found: {:?}", present_config);
+            }
+
+            // Load present configuration
+            let config = PresentConfig::from_file(&present_config)
+                .map_err(|e| anyhow::anyhow!("Failed to load present config: {}", e))?;
+
+            if quiet == 0 {
+                info!(
+                    "Present: container {} with {} items, target slot {}",
+                    config.container.type_id,
+                    config.items.len(),
+                    target_slot
+                );
+            }
+
+            // Find all .usr files (recursively in XX/ subdirectories)
+            let usr_files = find_files_with_extension(&usr_path, "usr")?;
+
+            if quiet == 0 {
+                info!("Found {} .usr files", usr_files.len());
+            }
+
+            // Process files and collect results
+            let results: Vec<GiftResult> = usr_files
+                .par_iter()
+                .map(|path| apply_present_to_file(path, &config, target_slot, dry_run))
+                .collect();
+
+            // Aggregate summary
+            let mut summary = GiftSummary::new();
+            for result in &results {
+                summary.add_result(result);
+
+                // Log individual results based on quiet level
+                match result {
+                    GiftResult::Gifted { player_name } => {
+                        if quiet == 0 {
+                            info!("Gifted: {}", player_name);
+                        }
+                    }
+                    GiftResult::SlotOccupied { player_name } => {
+                        if quiet == 0 {
+                            info!("Skipped (slot occupied): {}", player_name);
+                        }
+                    }
+                    GiftResult::Error { player_name, error } => {
+                        if quiet < 2 {
+                            tracing::warn!("Error for {}: {}", player_name, error);
+                        }
+                    }
+                }
+            }
+
+            // Print summary
+            if quiet == 0 {
+                info!("--- Summary ---");
+                info!("Total processed: {}", summary.total_processed);
+                info!("Gifted: {}", summary.gifted);
+                info!("Skipped (slot occupied): {}", summary.skipped);
+                info!("Errors: {}", summary.errors);
+                if dry_run {
+                    info!("(DRY RUN - no files were modified)");
+                }
+            }
         }
     }
 

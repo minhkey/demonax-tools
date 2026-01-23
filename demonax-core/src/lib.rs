@@ -4,7 +4,9 @@ pub mod database;
 pub mod error;
 pub mod file_utils;
 pub mod harvesting;
+pub mod inventory;
 pub mod parsers;
+pub mod present;
 pub mod processors;
 pub mod models;
 

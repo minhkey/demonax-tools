@@ -52,6 +52,11 @@ cargo build --release
 ./target/release/demonax --database ./game.sqlite update-spells --magic-cc /path/to/magic.cc --game-path /path/to/game
 ./target/release/demonax --database ./game.sqlite process-usr --input-dir /path/to/game/usr --snapshot-date 2026-01-07
 
+# Generate harvesting rules for game engine (no database needed)
+./target/release/demonax update-move-use-harvesting \
+  --csv-path /path/to/harvesting.csv \
+  --moveuse-path /path/to/game/dat/moveuse.dat
+
 # Or use the test suite
 ./test-all-commands.sh
 ```
@@ -63,7 +68,7 @@ cargo build --release
 All commands support these global options:
 
 - `--database <PATH>`: SQLite database file path (default: `./demonax.sqlite`)
-- `--log-file <PATH>`: Log file path for tracing output
+- `--log-file <PATH>`: Log file path for tracing output (default: `/tmp/demonax-tools.log`)
 - `-v`, `-vv`, `-vvv`, `-vvvv`: Verbosity levels (0-4 for increasingly detailed logging)
 - `--quiet <0-4>`: Reduce output verbosity (0=normal, 4=silent)
 
@@ -88,8 +93,8 @@ demonax [--database <DB>] process-usr --input-dir <DIR> --snapshot-date <DATE> [
   - `players`: Player names and first/last seen dates
   - `daily_snapshots`: Stats snapshot (level, experience, magic level, skills, equipment)
   - `daily_quests`: Quest completion flags
-  - `bestiary`: Monster kill counts
-  - `harvesting`: Harvesting progress per race
+  - `daily_bestiary`: Monster kill counts
+  - `daily_harvesting`: Harvesting progress per race
 
 **Performance:** < 5 seconds for 18 player files
 
@@ -373,6 +378,144 @@ demonax --database ./demonax.sqlite update-spells \
 
 ---
 
+### 9. update-move-use-harvesting - Generate Harvesting Rules for moveuse.dat
+
+Generate MultiUse harvesting rules from CSV and insert them into moveuse.dat.
+
+**Syntax:**
+```bash
+demonax update-move-use-harvesting --csv-path <PATH> --moveuse-path <PATH>
+```
+
+**Purpose:** Generate game engine rules for harvesting mechanics and insert them into the moveuse.dat configuration file. This command does not use the database - it directly transforms CSV data into game rules.
+
+**Inputs:**
+- `--csv-path`: Path to harvesting.csv file
+- `--moveuse-path`: Path to moveuse.dat file to update
+- CSV format: `tool_id,corpse_id,next_corpse_id,percent_chance,reward_id,race_id`
+
+**Outputs:**
+- Updates moveuse.dat in-place with harvesting rules between `BEGIN "MultiUse"` and `BEGIN "Baking"` markers
+
+**Rule Format Generated:**
+For each CSV entry, two rules are generated:
+```
+# Success rule (random chance passes)
+MultiUse, IsType(Obj1, <tool_id>), IsType(Obj2, <corpse_id>), Random(<percent_chance>) -> Create(Obj2, <reward_id>, 0), Change(Obj2, <next_corpse_id>, 0), Effect(User, 13), IncrementHarvestingValue(User, <race_id>, 1)
+
+# Failure rule (fallback when random fails)
+MultiUse, IsType(Obj1, <tool_id>), IsType(Obj2, <corpse_id>) -> Change(Obj2, <next_corpse_id>, 0)
+```
+
+**Example Input (harvesting.csv):**
+```csv
+tool_id,corpse_id,next_corpse_id,percent_chance,reward_id,race_id
+5544,5317,5518,9,5366,403
+5544,4016,4017,7,5390,72
+```
+
+**Example Output (moveuse.dat section):**
+```
+BEGIN "MultiUse"
+BEGIN "Harvesting"
+MultiUse, IsType(Obj1, 5544), IsType(Obj2, 5317), Random(9) -> Create(Obj2, 5366, 0), Change(Obj2, 5518, 0), Effect(User, 13), IncrementHarvestingValue(User, 403, 1)
+MultiUse, IsType(Obj1, 5544), IsType(Obj2, 5317) -> Change(Obj2, 5518, 0)
+MultiUse, IsType(Obj1, 5544), IsType(Obj2, 4016), Random(7) -> Create(Obj2, 5390, 0), Change(Obj2, 4017, 0), Effect(User, 13), IncrementHarvestingValue(User, 72, 1)
+MultiUse, IsType(Obj1, 5544), IsType(Obj2, 4016) -> Change(Obj2, 4017, 0)
+END
+BEGIN "Baking"
+```
+
+**Performance:** < 1 second
+
+**Example:**
+```bash
+demonax update-move-use-harvesting \
+  --csv-path ~/repos/demonax-data/csv/harvesting.csv \
+  --moveuse-path /home/cmd/tibia_local/game/dat/moveuse.dat
+```
+
+**Data Notes:**
+- Replaces all existing content between `BEGIN "MultiUse"` and `BEGIN "Baking"`
+- Wraps rules in `BEGIN "Harvesting"` / `END` markers
+- Idempotent: running multiple times produces the same result
+- Success rules include `Effect(User, 13)` (green shimmer visual effect)
+- Success rules increment harvesting statistics via `IncrementHarvestingValue`
+- Failure rules only change the corpse (no reward, no effect)
+
+---
+
+### 10. give-present - Give Presents to Players
+
+Modify player .usr files to give presents (items placed in inventory slots).
+
+**Syntax:**
+```bash
+demonax give-present --usr-path <DIR> --present-config <PATH> [--target-slot <NUM>] [--dry-run] [--quiet <0-2>]
+```
+
+**Purpose:** Distribute gift items (in containers) to all players by modifying their .usr files. Commonly used for seasonal events or promotions.
+
+**Inputs:**
+- `--usr-path`: Directory containing .usr files (typically `game/usr` with subdirectories 00-99)
+- `--present-config`: Path to TOML file defining the present contents
+- `--target-slot`: Inventory slot to place present (default: 10)
+- `--dry-run`: Show what would be done without modifying files
+- `--quiet`: Verbosity level (0=normal, 1=suppress messages, 2=suppress warnings too)
+
+**Present Config Format (TOML):**
+```toml
+# present.toml
+[container]
+type_id = 2854  # Present box item ID
+
+[[items]]
+type_id = 3726  # Orange mushroom
+amount = 99
+
+[[items]]
+type_id = 3155  # Sudden Death rune
+charges = 35
+
+[[items]]
+type_id = 3160  # Ultimate Healing rune
+charges = 70
+```
+
+**Outputs:**
+- Modified .usr files with presents added to the target inventory slot
+- Summary: total processed, gifted, skipped (slot occupied), errors
+
+**Behavior:**
+- Only gives presents to players whose target slot is empty
+- Skips players who already have something in the target slot
+- Uses parallel processing for efficiency
+- Preserves file encoding (Windows-1252/Latin-1)
+
+**Example:**
+```bash
+# Dry run to preview changes
+demonax give-present \
+  --usr-path /home/cmd/game/usr \
+  --present-config present.toml \
+  --dry-run
+
+# Actually give presents
+demonax give-present \
+  --usr-path /home/cmd/game/usr \
+  --present-config present.toml
+```
+
+**Test Output Example:**
+```
+Total processed: 18
+Gifted: 15
+Skipped (slot occupied): 3
+Errors: 0
+```
+
+---
+
 ## Command Execution Order
 
 Commands should be executed in this order due to dependencies:
@@ -393,11 +536,17 @@ demonax update-spells --magic-cc /path/to/magic.cc --game-path /path/to/game
 
 # Stage 4: Player data (can reference creatures/items)
 demonax process-usr --input-dir /path/to/game/usr --snapshot-date 2026-01-07
+
+# Standalone: Game engine file generation (no database dependency)
+demonax update-move-use-harvesting \
+  --csv-path /path/to/harvesting.csv \
+  --moveuse-path /path/to/game/dat/moveuse.dat
 ```
 
 **Dependency Summary:**
 - `update-items-quests` requires: `update-items-core` and `update-quest-overview`
 - `process-usr` benefits from (but doesn't require): `update-creatures` and `update-items-core` for referencing loot/equipment
+- `update-move-use-harvesting` is standalone (no database required, directly transforms CSV to game rules)
 
 ---
 
@@ -435,7 +584,7 @@ daily_quests (
   FOREIGN KEY (snapshot_id) REFERENCES daily_snapshots(id) ON DELETE CASCADE
 )
 
-bestiary (
+daily_bestiary (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   snapshot_id INTEGER NOT NULL,
   monster_id INTEGER NOT NULL,
@@ -443,7 +592,7 @@ bestiary (
   FOREIGN KEY (snapshot_id) REFERENCES daily_snapshots(id) ON DELETE CASCADE
 )
 
-harvesting (
+daily_harvesting (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   snapshot_id INTEGER NOT NULL,
   race_id INTEGER NOT NULL,
@@ -571,8 +720,8 @@ rune_sellers (
 
 - `daily_snapshots.player_id` → `players.id`
 - `daily_quests.snapshot_id` → `daily_snapshots.id`
-- `bestiary.snapshot_id` → `daily_snapshots.id`
-- `harvesting.snapshot_id` → `daily_snapshots.id`
+- `daily_bestiary.snapshot_id` → `daily_snapshots.id`
+- `daily_harvesting.snapshot_id` → `daily_snapshots.id`
 - `creature_loot.creature_id` → `creatures.id`
 - `spell_teachers.spell_id` → `spells.id`
 - `rune_sellers.spell_id` → `spells.id` (for runes only, NULL for wands/rods)
@@ -605,7 +754,7 @@ ORDER BY snapshot_date;
 
 -- Top monster hunters (bestiary kills)
 SELECT p.name, b.monster_id, b.kill_count
-FROM bestiary b
+FROM daily_bestiary b
 JOIN daily_snapshots ds ON b.snapshot_id = ds.id
 JOIN players p ON ds.player_id = p.id
 ORDER BY b.kill_count DESC
@@ -879,7 +1028,7 @@ This script:
 
 Based on test data in `DEV/game/`:
 
-| Command             | Files Processed     | Time  | Database Records           |
+| Command             | Files Processed     | Time  | Output                     |
 |---------------------|---------------------|-------|----------------------------|
 | update-creatures    | 202 .mon            | 1.6s  | 187 creatures, 1911 loot   |
 | update-items-core   | 1 .srv + 352 .npc   | 5.9s  | 706 items, 4709 prices     |
@@ -887,8 +1036,10 @@ Based on test data in `DEV/game/`:
 | update-items-quests | DB operation        | 0.02s | Updates items.rewarded_from|
 | update-raids        | 35 .evt             | 0.3s  | 34 raids                   |
 | update-harvesting   | 1 CSV               | 0.02s | 26 recipes                 |
-| update-spells       | 1 .cc + 352 .npc    | 0.95s | 108 spells, 637 teachers, 69 rune/wand/rod sellers |
+| update-spells       | 1 .cc + 352 .npc    | 0.95s | 108 spells, 637 teachers, 69 sellers |
 | process-usr         | 18 .usr             | 0.25s | 18 players, 18 snapshots   |
+| update-move-use-harvesting | 1 CSV        | 0.02s | 56 rules in moveuse.dat    |
+| give-present       | 18 .usr             | 0.1s  | 15 gifted, 3 skipped       |
 
 **Total:** ~9 seconds, ~50-100 MB database (depending on loot/quest data volume)
 
@@ -917,12 +1068,15 @@ demonax-tools/
 │   │   └── 004_game_data_schema.up.sql
 │   └── src/
 │       ├── lib.rs          # Public exports
-│       ├── models.rs       # Data structures (258 lines)
-│       ├── parsers.rs      # File format parsers (1,002 lines)
-│       ├── database.rs     # SQLite operations (811 lines)
-│       ├── error.rs        # Error types (41 lines)
-│       ├── file_utils.rs   # File discovery (41 lines)
-│       └── processors.rs   # Processing logic (4 lines)
+│       ├── models.rs       # Data structures
+│       ├── parsers.rs      # File format parsers
+│       ├── database.rs     # SQLite operations
+│       ├── harvesting.rs   # Harvesting rule generation for moveuse.dat
+│       ├── inventory.rs    # Inventory parsing/serialization for .usr files
+│       ├── present.rs      # Present config and application logic
+│       ├── error.rs        # Error types
+│       ├── file_utils.rs   # File discovery
+│       └── processors.rs   # Processing logic
 ├── test-all-commands.sh    # Comprehensive test suite
 ├── test-output/            # Test results and databases
 ├── DEV/game/               # Test data
@@ -939,6 +1093,11 @@ demonax-tools/
 - `.sec` files: Binary map sector data with container parsing
 - `objects.srv`: Binary item database with flags and attributes
 - `magic.cc`: C++ source code parsing for spell definitions
+
+**Harvesting (`demonax-core/src/harvesting.rs`):**
+- Rule generation: Transforms CSV data into MultiUse game engine rules
+- File manipulation: Inserts rules into moveuse.dat between section markers
+- Idempotent updates: Replaces existing harvesting rules cleanly
 
 **Database (`demonax-core/src/database.rs`):**
 - Automatic migrations using rusqlite_migration

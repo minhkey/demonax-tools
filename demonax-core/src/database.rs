@@ -82,7 +82,7 @@ impl Database {
                 UNIQUE(snapshot_id, quest_id)
             );
 
-            CREATE TABLE IF NOT EXISTS bestiary (
+            CREATE TABLE IF NOT EXISTS daily_bestiary (
                 id INTEGER PRIMARY KEY,
                 snapshot_id INTEGER NOT NULL,
                 monster_id INTEGER NOT NULL,
@@ -91,7 +91,7 @@ impl Database {
                 UNIQUE(snapshot_id, monster_id)
             );
 
-            CREATE TABLE IF NOT EXISTS harvesting (
+            CREATE TABLE IF NOT EXISTS daily_harvesting (
                 id INTEGER PRIMARY KEY,
                 snapshot_id INTEGER NOT NULL,
                 race_id INTEGER NOT NULL,
@@ -430,7 +430,7 @@ impl Database {
     fn insert_bestiary(&self, conn: &Connection, snapshot_id: i32, parsed: &ParsedUsrFile) -> Result<()> {
         for entry in &parsed.bestiary {
             conn.execute(
-                "INSERT INTO bestiary (snapshot_id, monster_id, kill_count) VALUES (?, ?, ?)",
+                "INSERT INTO daily_bestiary (snapshot_id, monster_id, kill_count) VALUES (?, ?, ?)",
                 params![snapshot_id, entry.monster_id, entry.kill_count],
             )?;
         }
@@ -441,7 +441,7 @@ impl Database {
     fn insert_harvesting(&self, conn: &Connection, snapshot_id: i32, parsed: &ParsedUsrFile) -> Result<()> {
         for entry in &parsed.harvesting {
             conn.execute(
-                "INSERT INTO harvesting (snapshot_id, race_id, harvest_count) VALUES (?, ?, ?)",
+                "INSERT INTO daily_harvesting (snapshot_id, race_id, harvest_count) VALUES (?, ?, ?)",
                 params![snapshot_id, entry.race_id, entry.harvest_count],
             )?;
         }

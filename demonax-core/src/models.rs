@@ -90,7 +90,7 @@ pub struct DailyQuest {
     pub completion_count: i32,
 }
 
-/// Database model for bestiary table
+/// Database model for daily_bestiary table
 #[derive(Debug, Clone)]
 pub struct Bestiary {
     pub id: i32,
@@ -99,7 +99,7 @@ pub struct Bestiary {
     pub kill_count: i32,
 }
 
-/// Database model for harvesting table
+/// Database model for daily_harvesting table
 #[derive(Debug, Clone)]
 pub struct Harvesting {
     pub id: i32,

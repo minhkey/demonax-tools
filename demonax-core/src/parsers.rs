@@ -12,6 +12,53 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Resolve @"filename.ndb" include directives in NPC file text.
+///
+/// Searches for lines containing @"something.ndb" and replaces them with
+/// the contents of the referenced .ndb file (looked up in the same directory
+/// as the source file).
+fn resolve_ndb_includes(text: &str, file_path: &Path) -> String {
+    let include_re = match Regex::new(r#"@"([^"]+\.ndb)""#) {
+        Ok(re) => re,
+        Err(_) => return text.to_string(),
+    };
+
+    let parent_dir = match file_path.parent() {
+        Some(dir) => dir,
+        None => return text.to_string(),
+    };
+
+    let mut result = text.to_string();
+
+    // Find all .ndb includes and replace with file contents
+    for caps in include_re.captures_iter(text) {
+        let full_match = caps.get(0).unwrap().as_str();
+        let ndb_filename = caps.get(1).unwrap().as_str();
+        let ndb_path = parent_dir.join(ndb_filename);
+
+        if ndb_path.exists() {
+            match read_latin1_file(&ndb_path) {
+                Ok(ndb_content) => {
+                    result = result.replace(full_match, &ndb_content);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to read .ndb file {:?}: {}",
+                        ndb_path, e
+                    );
+                }
+            }
+        } else {
+            eprintln!(
+                "Warning: .ndb file not found: {:?} (referenced from {:?})",
+                ndb_path, file_path
+            );
+        }
+    }
+
+    result
+}
+
 /// Parse a .usr file and extract player data.
 pub fn parse_usr_file(file_path: &Path) -> Result<ParsedUsrFile> {
     let text = read_latin1_file(file_path)?;
@@ -900,6 +947,7 @@ fn title_case_item_name(name: &str) -> String {
 /// Parse .npc file and extract item prices
 pub fn parse_npc_file(file_path: &Path) -> Result<Vec<ItemPrice>> {
     let text = read_latin1_file(file_path)?;
+    let text = resolve_ndb_includes(&text, file_path);
 
     let mut prices = Vec::new();
 
@@ -1235,6 +1283,7 @@ fn classify_spell_by_flags(flags: i32, words: &str, _name: &str) -> String {
 /// with Type=, Price=, and vocation information
 pub fn parse_npc_spell_teaching(file_path: &Path) -> Result<Vec<SpellTeacher>> {
     let text = read_latin1_file(file_path)?;
+    let text = resolve_ndb_includes(&text, file_path);
 
     let mut teachers = Vec::new();
 
@@ -1327,6 +1376,7 @@ fn extract_vocations_from_line(line: &str) -> Vec<String> {
 /// keywords, extracting vocation restrictions from line prefixes or descriptions
 pub fn parse_npc_rune_selling(file_path: &Path) -> Result<Vec<RuneSeller>> {
     let text = read_latin1_file(file_path)?;
+    let text = resolve_ndb_includes(&text, file_path);
     let mut sellers = Vec::new();
 
     // Extract NPC name (same pattern as spell teaching)
