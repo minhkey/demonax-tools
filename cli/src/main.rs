@@ -22,7 +22,7 @@ struct Cli {
     database: Option<std::path::PathBuf>,
 
     /// Path to log file
-    #[arg(long, global = true, default_value = "/var/log/demonax-tools.log")]
+    #[arg(long, global = true, default_value = "/tmp/demonax-tools.log")]
     log_file: std::path::PathBuf,
 
     /// Verbosity level (repeat for more verbose output)
