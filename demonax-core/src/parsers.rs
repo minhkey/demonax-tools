@@ -127,13 +127,13 @@ pub fn parse_usr_file(file_path: &Path) -> Result<ParsedUsrFile> {
                     skills.experience = parts[11].parse().unwrap_or(-1); // index 12 in R is 11 zero-based
                 }
                 1 => skills.magic_level = skill_value,
-                6 => skills.fist_fighting = skill_value,
-                7 => skills.club_fighting = skill_value,
+                6 => skills.shielding = skill_value,
+                7 => skills.distance_fighting = skill_value,
                 8 => skills.sword_fighting = skill_value,
-                9 => skills.axe_fighting = skill_value,
-                10 => skills.distance_fighting = skill_value,
-                11 => skills.shielding = skill_value,
-                14 => skills.fishing = skill_value,
+                9 => skills.club_fighting = skill_value,
+                10 => skills.axe_fighting = skill_value,
+                11 => skills.fist_fighting = skill_value,
+                13 => skills.fishing = skill_value,
                 _ => {}
             }
         }
@@ -235,13 +235,12 @@ fn parse_equipment(text: &str) -> Vec<i32> {
 
     // For each slot 1..=10
     for slot in 1..=10 {
-        let pattern = format!(r"(?<=[\s{{,]){}\s+Content\s*=\s*{{\s*(\d+)", slot);
-        let re = Regex::new(&pattern).ok();
-        if let Some(re) = re {
-            if let Some(caps) = re.captures(inv_content) {
-                if let Some(value) = caps.get(1) {
-                    equipment[slot - 1] = value.as_str().parse().unwrap_or(-1);
-                }
+        // Note: Rust regex crate doesn't support lookbehind, so we match the slot number directly
+        let pattern = format!(r"{}\s+Content\s*=\s*\{{\s*(\d+)", slot);
+        let re = Regex::new(&pattern).unwrap();
+        if let Some(caps) = re.captures(inv_content) {
+            if let Some(value) = caps.get(1) {
+                equipment[slot - 1] = value.as_str().parse().unwrap_or(-1);
             }
         }
     }

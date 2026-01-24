@@ -726,6 +726,8 @@ rune_sellers (
 - `spell_teachers.spell_id` → `spells.id`
 - `rune_sellers.spell_id` → `spells.id` (for runes only, NULL for wands/rods)
 
+**Important:** The `snapshot_id` in `daily_quests`, `daily_bestiary`, and `daily_harvesting` tables references `daily_snapshots.id`, not `players.id`. This allows tracking per-snapshot progress rather than just per-player progress, enabling time-series analysis of quest completion, monster kills, and harvesting over time.
+
 **Note:** Some relationships use item type IDs directly rather than foreign keys (e.g., `item_prices.item_id` references `items.type_id`, not `items.id`, and `rune_sellers.item_id` references item type IDs) to match game file formats.
 
 ---
