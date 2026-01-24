@@ -43,6 +43,7 @@ pub struct HarvestingEntry {
 /// Parsed data from a .usr file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedUsrFile {
+    pub player_id: i32,
     pub skills: PlayerSkills,
     pub quest_values: Vec<QuestCompletion>,
     pub bestiary: Vec<BestiaryEntry>,
@@ -383,4 +384,13 @@ pub struct Raid {
     pub message: String,         // Aggregated messages
     pub creatures: String,       // "5 to 10 Dragon, 2 Demon, ..."
     pub spawn_composition_json: String, // JSON with detailed spawn data
+}
+
+/// Player snapshot data for equipment rendering
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerSnapshot {
+    pub player_id: i32,
+    pub player_name: String,
+    pub snapshot_date: String,
+    pub equipment: Vec<i32>,  // Deserialized from equipment_json
 }

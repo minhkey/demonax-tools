@@ -6,6 +6,8 @@ use demonax_core::parsers::{parse_evt_file, parse_magic_cc, parse_map_sector_fil
 use demonax_core::models::HarvestingData;
 use demonax_core::{generate_all_harvesting_rules, insert_harvesting_rules};
 use demonax_core::present::{apply_present_to_file, GiftResult, GiftSummary, PresentConfig};
+use demonax_core::rendering::{render_player_equipment, RenderConfig};
+use image::open;
 use rayon::prelude::*;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -173,6 +175,33 @@ enum Commands {
         /// Show what would be done without modifying files
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+
+        /// Quiet mode (0=show messages/warnings, 1=suppress messages, 2=suppress both)
+        #[arg(long, default_value_t = 0)]
+        quiet: u8,
+    },
+
+    /// Render player equipment images from database
+    RenderEquipment {
+        /// Directory containing item PNG files (named {id}.png)
+        #[arg(long)]
+        data_dir: std::path::PathBuf,
+
+        /// Directory where output equipment images will be saved
+        #[arg(long)]
+        output_dir: std::path::PathBuf,
+
+        /// Path to eq.png template (112x149 base image)
+        #[arg(long)]
+        template: std::path::PathBuf,
+
+        /// Path to blank.png for empty equipment slots
+        #[arg(long)]
+        blank: std::path::PathBuf,
+
+        /// Optional: render only this player ID (omit to render all)
+        #[arg(long)]
+        player_id: Option<i32>,
 
         /// Quiet mode (0=show messages/warnings, 1=suppress messages, 2=suppress both)
         #[arg(long, default_value_t = 0)]
@@ -760,6 +789,101 @@ async fn main() -> Result<()> {
                 if dry_run {
                     info!("(DRY RUN - no files were modified)");
                 }
+            }
+        }
+        Commands::RenderEquipment { data_dir, output_dir, template, blank, player_id, quiet } => {
+            let db_path = cli.database.unwrap_or_else(|| std::path::PathBuf::from("./demonax.sqlite"));
+            let db = Database::new(&db_path)?;
+
+            if quiet == 0 {
+                info!("Rendering player equipment images");
+            }
+
+            // Validate input paths
+            if !data_dir.exists() {
+                anyhow::bail!("Data directory not found: {:?}", data_dir);
+            }
+            if !template.exists() {
+                anyhow::bail!("Template image not found: {:?}", template);
+            }
+            if !blank.exists() {
+                anyhow::bail!("Blank image not found: {:?}", blank);
+            }
+
+            // Load template and blank images once
+            if quiet == 0 {
+                info!("Loading template and blank images");
+            }
+            let template_img = open(&template)
+                .map_err(|e| anyhow::anyhow!("Failed to load template: {}", e))?
+                .to_rgba8();
+            let blank_img = open(&blank)
+                .map_err(|e| anyhow::anyhow!("Failed to load blank image: {}", e))?
+                .to_rgba8();
+
+            // Get latest snapshots from database
+            if quiet == 0 {
+                if let Some(pid) = player_id {
+                    info!("Fetching snapshot for player ID {}", pid);
+                } else {
+                    info!("Fetching all player snapshots from database");
+                }
+            }
+            let snapshots = db.get_latest_snapshots(player_id)?;
+
+            if snapshots.is_empty() {
+                anyhow::bail!("No snapshots found in database");
+            }
+
+            if quiet == 0 {
+                info!("Found {} player snapshot(s) to render", snapshots.len());
+            }
+
+            // Create render config
+            let config = RenderConfig {
+                data_dir,
+                output_dir,
+                template_path: template,
+                blank_path: blank,
+            };
+
+            // Render equipment images in parallel
+            let results: Vec<_> = snapshots
+                .par_iter()
+                .map(|snapshot| {
+                    match render_player_equipment(snapshot, &config, &template_img, &blank_img, quiet) {
+                        Ok(output_path) => Ok((snapshot.player_name.clone(), output_path)),
+                        Err(e) => Err((snapshot.player_name.clone(), e)),
+                    }
+                })
+                .collect();
+
+            // Summarize results
+            let mut success_count = 0;
+            let mut error_count = 0;
+
+            for result in results {
+                match result {
+                    Ok((player_name, output_path)) => {
+                        success_count += 1;
+                        if quiet == 0 {
+                            info!("Rendered: {} -> {:?}", player_name, output_path);
+                        }
+                    }
+                    Err((player_name, error)) => {
+                        error_count += 1;
+                        if quiet < 2 {
+                            tracing::warn!("Failed to render {}: {}", player_name, error);
+                        }
+                    }
+                }
+            }
+
+            if quiet == 0 {
+                info!("--- Summary ---");
+                info!("Successfully rendered: {}", success_count);
+                info!("Errors: {}", error_count);
+                info!("Output directory: {:?}", config.output_dir);
             }
         }
     }

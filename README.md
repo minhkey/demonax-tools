@@ -25,6 +25,7 @@ All data is stored in a SQLite database with a well-structured schema for effici
 - **Async/Parallel**: tokio, rayon, futures
 - **Logging**: tracing framework with file appender
 - **Progress Reporting**: indicatif
+- **Image Processing**: image crate for equipment rendering
 
 ## Installation & Building
 
@@ -513,6 +514,103 @@ Gifted: 15
 Skipped (slot occupied): 3
 Errors: 0
 ```
+
+---
+
+### 11. render-equipment - Render Player Equipment Images
+
+Generate equipment visualization images for players from database snapshots.
+
+**Syntax:**
+```bash
+demonax render-equipment --data-dir <DIR> --output-dir <DIR> --template <PATH> --blank <PATH> [--player-id <ID>] [--quiet <0-2>]
+```
+
+**Purpose:** Create visual representations of player equipment by compositing item images onto a template. Replaces the previous bash/ImageMagick workflow with a fast, parallel Rust implementation.
+
+**Inputs:**
+- `--data-dir`: Directory containing item PNG files (named `{id}.png`, e.g., `3031.png` for gold coins)
+- `--output-dir`: Directory where rendered equipment images will be saved
+- `--template`: Path to eq.png template image (112x149 base image)
+- `--blank`: Path to blank.png for empty equipment slots
+- `--player-id`: Optional player ID to render only one player (omit to render all)
+- `--quiet`: Verbosity level (0=normal, 1=suppress messages, 2=suppress warnings too)
+
+**Equipment Slot Layout:**
+The renderer overlays 10 equipment slots onto the template at fixed positions:
+- Slot 0: Helmet (40, 2)
+- Slot 1: Amulet/Neck (3, 17)
+- Slot 2: Backpack (77, 17)
+- Slot 3: Armor (40, 40)
+- Slot 4: Right Hand (77, 53)
+- Slot 5: Left Hand/Shield (3, 54)
+- Slot 6: Legs (40, 77)
+- Slot 7: Boots (40, 114)
+- Slot 8: Ring (3, 91)
+- Slot 9: Arrows (77, 90)
+
+**Outputs:**
+- PNG files named `{player_id}.png` in the output directory
+- One image per player showing their current equipment
+- Uses parallel processing for efficient batch rendering
+
+**Behavior:**
+- Reads equipment data from the latest snapshot date in the database
+- Empty slots (item_id = -1) render as blank.png
+- Missing item images fallback to blank.png with a warning
+- Parallel processing with rayon for multi-player rendering
+- Creates output directory if it doesn't exist
+
+**Performance:** ~20ms per player (parallelized), 18 players in ~0.02 seconds
+
+**Example:**
+```bash
+# Render all players
+demonax --database ./demonax.sqlite render-equipment \
+  --data-dir ~/repos/demonax-data/items \
+  --output-dir /var/www/demonax/equipment \
+  --template DEV/eq.png \
+  --blank DEV/blank.png
+
+# Render single player
+demonax --database ./demonax.sqlite render-equipment \
+  --data-dir ~/repos/demonax-data/items \
+  --output-dir /tmp/equipment-test \
+  --template DEV/eq.png \
+  --blank DEV/blank.png \
+  --player-id 1
+```
+
+**Test Output Example:**
+```
+Found 18 player snapshot(s) to render
+Rendered: Thefireguy -> "/tmp/equipment-test/1.png"
+Rendered: Vindhjarta -> "/tmp/equipment-test/2.png"
+...
+--- Summary ---
+Successfully rendered: 18
+Errors: 0
+```
+
+**Dependencies:** Requires `process-usr` to have been run first to populate player snapshots in the database.
+
+**Error Handling:**
+- Missing item images: Uses blank.png with warning (non-fatal)
+- No snapshots found: Fatal error with clear message
+- Missing template/blank: Fatal error before processing starts
+
+**Quick Test:**
+```bash
+# Run the pre-configured test script
+./DEV/test-render-equipment.sh
+```
+
+This test script will:
+1. Check all prerequisites (database, item images, template files)
+2. Render a single player (ID 1) to verify basic functionality
+3. Render all players to test parallel processing
+4. Display summary with file counts and sizes
+5. All paths are pre-filled for the DEV environment
 
 ---
 
@@ -1042,6 +1140,7 @@ Based on test data in `DEV/game/`:
 | process-usr         | 18 .usr             | 0.25s | 18 players, 18 snapshots   |
 | update-move-use-harvesting | 1 CSV        | 0.02s | 56 rules in moveuse.dat    |
 | give-present       | 18 .usr             | 0.1s  | 15 gifted, 3 skipped       |
+| render-equipment   | DB + 180 item PNGs  | 0.02s | 18 equipment images        |
 
 **Total:** ~9 seconds, ~50-100 MB database (depending on loot/quest data volume)
 
@@ -1076,6 +1175,7 @@ demonax-tools/
 │       ├── harvesting.rs   # Harvesting rule generation for moveuse.dat
 │       ├── inventory.rs    # Inventory parsing/serialization for .usr files
 │       ├── present.rs      # Present config and application logic
+│       ├── rendering.rs    # Equipment image rendering with image crate
 │       ├── error.rs        # Error types
 │       ├── file_utils.rs   # File discovery
 │       └── processors.rs   # Processing logic

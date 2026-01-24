@@ -9,6 +9,7 @@ pub mod parsers;
 pub mod present;
 pub mod processors;
 pub mod models;
+pub mod rendering;
 
 pub use error::{Result, DemonaxError};
 pub use harvesting::{generate_harvesting_rule, generate_all_harvesting_rules, insert_harvesting_rules};

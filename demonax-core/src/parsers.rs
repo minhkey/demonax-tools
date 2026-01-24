@@ -195,6 +195,7 @@ pub fn parse_usr_file(file_path: &Path) -> Result<ParsedUsrFile> {
     let equipment = parse_equipment(&text);
 
     Ok(ParsedUsrFile {
+        player_id,
         skills,
         quest_values,
         bestiary,
@@ -231,16 +232,43 @@ fn parse_equipment(text: &str) -> Vec<i32> {
         return equipment;
     }
     let end_pos = start_pos + i;
-    let inv_content = &text[inv_match.start()..end_pos];
 
-    // For each slot 1..=10
-    for slot in 1..=10 {
-        // Note: Rust regex crate doesn't support lookbehind, so we match the slot number directly
-        let pattern = format!(r"{}\s+Content\s*=\s*\{{\s*(\d+)", slot);
-        let re = Regex::new(&pattern).unwrap();
-        if let Some(caps) = re.captures(inv_content) {
-            if let Some(value) = caps.get(1) {
-                equipment[slot - 1] = value.as_str().parse().unwrap_or(-1);
+    // Extract just the content between the braces (excluding "Inventory = {" and final "}")
+    let inv_content = &text[start_pos..end_pos - 1];
+
+    // Parse line by line to avoid matching nested Content={} structures
+    for line in inv_content.lines() {
+        let line = line.trim();
+
+        // Check if line starts with a digit (slot number)
+        if let Some(first_char) = line.chars().next() {
+            if first_char.is_ascii_digit() {
+                // Extract slot number
+                let digits: String = line.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+
+                if let Ok(slot) = digits.parse::<usize>() {
+                    if slot >= 1 && slot <= 10 {
+                        // Look for "Content={" on this line only
+                        if let Some(content_pos) = line.find("Content=") {
+                            // Find the opening brace
+                            if let Some(brace_pos) = line[content_pos..].find('{') {
+                                let start = content_pos + brace_pos + 1;
+                                // Extract the first number after the brace
+                                let after_brace = &line[start..];
+                                let item_digits: String = after_brace.trim()
+                                    .chars()
+                                    .take_while(|c| c.is_ascii_digit())
+                                    .collect();
+
+                                if let Ok(item_id) = item_digits.parse::<i32>() {
+                                    equipment[slot - 1] = item_id;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

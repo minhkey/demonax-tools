@@ -1,7 +1,7 @@
 use crate::error::{DemonaxError, Result};
 use crate::file_utils;
 use crate::models::{
-    Creature, CreatureLoot, CreatureSpell, ParsedUsrFile,
+    Creature, CreatureLoot, CreatureSpell, ParsedUsrFile, PlayerSnapshot,
 };
 use crate::parsers;
 use r2d2::{Pool, PooledConnection};
@@ -335,36 +335,43 @@ impl Database {
     fn insert_or_update_player(
         &self,
         conn: &Connection,
+        player_id: i32,
         player_name: &str,
         snapshot_date: &str,
     ) -> Result<i32> {
-        // Check if player exists
-        let existing: Option<i32> = conn
+        // Check if player exists by ID
+        let existing: Option<(String, String)> = conn
             .query_row(
-                "SELECT id FROM players WHERE name = ?",
-                params![player_name],
-                |row| row.get(0),
+                "SELECT first_seen, last_seen FROM players WHERE id = ?",
+                params![player_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
 
         match existing {
-            Some(id) => {
+            Some((first_seen, last_seen)) => {
                 // Update last_seen if snapshot_date > last_seen
+                let new_last_seen = if snapshot_date > last_seen.as_str() {
+                    snapshot_date
+                } else {
+                    last_seen.as_str()
+                };
+
                 conn.execute(
-                    "UPDATE players SET last_seen = MAX(last_seen, ?) WHERE id = ?",
-                    params![snapshot_date, id],
+                    "INSERT OR REPLACE INTO players (id, name, first_seen, last_seen) VALUES (?, ?, ?, ?)",
+                    params![player_id, player_name, first_seen, new_last_seen],
                 )?;
-                Ok(id)
             }
             None => {
-                // Insert new player
+                // Insert new player with explicit ID
                 conn.execute(
-                    "INSERT INTO players (name, first_seen, last_seen) VALUES (?, ?, ?)",
-                    params![player_name, snapshot_date, snapshot_date],
+                    "INSERT INTO players (id, name, first_seen, last_seen) VALUES (?, ?, ?, ?)",
+                    params![player_id, player_name, snapshot_date, snapshot_date],
                 )?;
-                Ok(conn.last_insert_rowid() as i32)
             }
         }
+
+        Ok(player_id)
     }
 
     /// Check if snapshot already exists for player on given date.
@@ -458,7 +465,12 @@ impl Database {
         let mut conn = self.connection()?;
         let tx = conn.transaction()?;
 
-        let player_id = self.insert_or_update_player(&tx, &parsed.skills.name, snapshot_date)?;
+        let player_id = self.insert_or_update_player(
+            &tx,
+            parsed.player_id,
+            &parsed.skills.name,
+            snapshot_date
+        )?;
 
         if self.snapshot_exists(&tx, player_id, snapshot_date)? {
             // Snapshot already exists, skip inserting snapshot but keep player update
@@ -1382,6 +1394,69 @@ impl Database {
         }
 
         Ok(inserted_count)
+    }
+
+    /// Get the latest snapshot date from the database
+    pub fn get_latest_snapshot_date(&self) -> Result<String> {
+        let conn = self.connection()?;
+        let date: String = conn.query_row(
+            "SELECT MAX(snapshot_date) FROM daily_snapshots",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(date)
+    }
+
+    /// Get latest snapshots for all players (or a specific player if player_id is provided)
+    pub fn get_latest_snapshots(&self, player_id: Option<i32>) -> Result<Vec<PlayerSnapshot>> {
+        let conn = self.connection()?;
+
+        let query = if player_id.is_some() {
+            "SELECT ds.player_id, p.name, ds.snapshot_date, ds.equipment_json
+             FROM daily_snapshots ds
+             INNER JOIN players p ON ds.player_id = p.id
+             WHERE ds.snapshot_date = (SELECT MAX(snapshot_date) FROM daily_snapshots)
+             AND ds.player_id = ?"
+        } else {
+            "SELECT ds.player_id, p.name, ds.snapshot_date, ds.equipment_json
+             FROM daily_snapshots ds
+             INNER JOIN players p ON ds.player_id = p.id
+             WHERE ds.snapshot_date = (SELECT MAX(snapshot_date) FROM daily_snapshots)"
+        };
+
+        let mut stmt = conn.prepare(query)?;
+
+        let snapshots = if let Some(pid) = player_id {
+            stmt.query_map([pid], |row| {
+                let equipment_json: String = row.get(3)?;
+                let equipment: Vec<i32> = serde_json::from_str(&equipment_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok(PlayerSnapshot {
+                    player_id: row.get(0)?,
+                    player_name: row.get(1)?,
+                    snapshot_date: row.get(2)?,
+                    equipment,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_map([], |row| {
+                let equipment_json: String = row.get(3)?;
+                let equipment: Vec<i32> = serde_json::from_str(&equipment_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok(PlayerSnapshot {
+                    player_id: row.get(0)?,
+                    player_name: row.get(1)?,
+                    snapshot_date: row.get(2)?,
+                    equipment,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        Ok(snapshots)
     }
 
     // Additional helper methods will be added as needed
