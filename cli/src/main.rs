@@ -98,6 +98,9 @@ enum Commands {
         /// Web directory for output files
         #[arg(long, default_value = "/home/cmd/Documents/demonax/demonax-web")]
         web_path: std::path::PathBuf,
+        /// Path to quest CSV file with quest names
+        #[arg(long)]
+        quest_csv: Option<std::path::PathBuf>,
         /// Quiet mode
         #[arg(long, default_value_t = 0)]
         quiet: u8,
@@ -349,13 +352,34 @@ async fn main() -> Result<()> {
                 info!("Items table now includes 'rewarded_from' column with quest names");
             }
         }
-        Commands::UpdateQuestOverview { game_path, web_path: _, quiet } => {
+        Commands::UpdateQuestOverview { game_path, web_path: _, quest_csv, quiet } => {
             let db_path = cli.database.unwrap_or_else(|| std::path::PathBuf::from("./demonax.sqlite"));
             let db = Database::new(&db_path)?;
 
             if quiet == 0 {
                 info!("Processing quest overview from map files in {:?}", game_path);
             }
+
+            // Load quest names from CSV if provided
+            let quest_names = if let Some(csv_path) = quest_csv {
+                if quiet == 0 {
+                    info!("Loading quest names from CSV: {:?}", csv_path);
+                }
+                match Database::load_quest_names_from_csv(&csv_path) {
+                    Ok(names) => {
+                        if quiet == 0 {
+                            info!("Loaded {} quest names from CSV", names.len());
+                        }
+                        Some(names)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load quest CSV: {}. Continuing without quest names.", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
             // Find all map sector files
             let map_dir = game_path.join("map");
@@ -395,11 +419,10 @@ async fn main() -> Result<()> {
             }
 
             // Process quest chests into database
-            let processed = db.process_quest_chests(&all_chests, quiet)?;
+            let processed = db.process_quest_chests(&all_chests, quest_names.as_ref(), quiet)?;
 
             if quiet == 0 {
                 info!("Successfully processed {} quests into database: {:?}", processed, db_path);
-                info!("Quest metadata (names, descriptions) can be added via database updates");
             }
         }
         Commands::UpdateRaids { game_path, web_path: _, quiet } => {

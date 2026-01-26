@@ -216,10 +216,7 @@ impl Database {
                 worth INTEGER,
                 flags TEXT,
                 attributes TEXT,
-                image_link TEXT,
-                lootable_from TEXT,
-                sell_to TEXT,
-                buy_from TEXT
+                image_link TEXT
             );
 
             CREATE TABLE IF NOT EXISTS item_loot_sources (
@@ -1024,11 +1021,51 @@ impl Database {
         Ok(inserted_count)
     }
 
+    /// Load quest names from CSV file
+    ///
+    /// Returns a HashMap mapping quest_value to quest_name
+    pub fn load_quest_names_from_csv(csv_path: &std::path::Path) -> Result<HashMap<i32, String>> {
+        let mut quest_map = HashMap::new();
+
+        let file = std::fs::File::open(csv_path)
+            .map_err(|e| DemonaxError::Parse(format!("Failed to open quest CSV: {}", e)))?;
+
+        let mut rdr = csv::Reader::from_reader(file);
+
+        for result in rdr.records() {
+            let record = result.map_err(|e| DemonaxError::Parse(format!("Failed to parse CSV record: {}", e)))?;
+
+            // CSV format: quest_value,quest_name,quest_legend,link,level_rec
+            if record.len() < 2 {
+                continue;
+            }
+
+            let quest_value: i32 = record.get(0)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+
+            let quest_name = record.get(1)
+                .unwrap_or("")
+                .to_string();
+
+            if quest_value > 0 && !quest_name.is_empty() {
+                quest_map.insert(quest_value, quest_name);
+            }
+        }
+
+        Ok(quest_map)
+    }
+
     /// Process quest chest data from map files
     ///
     /// Note: This clears existing quest chest data and replaces it with new data.
-    /// Quest metadata (names, descriptions) should be managed separately.
-    pub fn process_quest_chests(&self, chests: &[crate::models::QuestChest], quiet: u8) -> Result<usize> {
+    /// Quest metadata (names, descriptions) can be provided via quest_names map.
+    pub fn process_quest_chests(
+        &self,
+        chests: &[crate::models::QuestChest],
+        quest_names: Option<&HashMap<i32, String>>,
+        quiet: u8
+    ) -> Result<usize> {
         let mut conn = self.connection()?;
         let tx = conn.transaction()?;
 
@@ -1054,6 +1091,12 @@ impl Database {
             let reward_items_json = serde_json::to_string(&chest.item_ids)?;
             let chest_location = format!("{} ({})", chest.ingame_coords, chest.sector_name);
 
+            // Get quest name from map or use default
+            let quest_name = quest_names
+                .and_then(|map| map.get(&chest.quest_value))
+                .map(|s| s.clone())
+                .unwrap_or_else(|| format!("Quest {}", chest.quest_value));
+
             // Insert or update quest
             tx.execute(
                 "INSERT INTO quests (id, chest_location, reward_items_json, name, description)
@@ -1071,7 +1114,7 @@ impl Database {
                     chest.quest_value,
                     &chest_location,
                     &reward_items_json,
-                    format!("Quest {}", chest.quest_value), // Default name
+                    &quest_name,
                     "", // Empty description for now
                 ),
             )?;

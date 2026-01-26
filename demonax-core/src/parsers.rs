@@ -1005,6 +1005,11 @@ pub fn parse_npc_file(file_path: &Path) -> Result<Vec<ItemPrice>> {
         .map_err(|e| DemonaxError::Parse(format!("Regex error: {}", e)))?;
 
     for line in text.lines() {
+        // Skip lines with variable placeholders (%1, %2, etc.) - these are bulk trading templates
+        if line.contains("%1") || line.contains("%2") || line.contains("%3") {
+            continue;
+        }
+
         if let Some(caps) = type_price_re.captures(line) {
             let type_id: i32 = caps.get(1)
                 .and_then(|m| m.as_str().parse().ok())
@@ -1031,6 +1036,88 @@ pub fn parse_npc_file(file_path: &Path) -> Result<Vec<ItemPrice>> {
     }
 
     Ok(prices)
+}
+
+/// Recursively extract all item IDs from a Content block string
+///
+/// Handles nested Content blocks like: Content={2853 Content={2821, 3271}, 3048}
+/// Returns all item IDs in a flat list
+fn extract_item_ids_from_content(content_str: &str) -> Vec<i32> {
+    let mut item_ids = Vec::new();
+    let mut current_num = String::new();
+    let mut depth = 0;
+    let mut in_nested_content = false;
+    let mut nested_content = String::new();
+
+    for ch in content_str.chars() {
+        match ch {
+            '{' => {
+                if depth > 0 {
+                    nested_content.push(ch);
+                }
+                depth += 1;
+                in_nested_content = true;
+
+                // Save the current number before entering nested content
+                if !current_num.is_empty() && depth == 1 {
+                    if let Ok(id) = current_num.trim().parse::<i32>() {
+                        item_ids.push(id);
+                    }
+                    current_num.clear();
+                }
+            }
+            '}' => {
+                depth -= 1;
+                if depth > 0 {
+                    nested_content.push(ch);
+                } else {
+                    // Recursively parse nested content
+                    if !nested_content.is_empty() {
+                        let nested_ids = extract_item_ids_from_content(&nested_content);
+                        item_ids.extend(nested_ids);
+                        nested_content.clear();
+                    }
+                    in_nested_content = false;
+                }
+            }
+            ',' | ' ' => {
+                if depth > 1 {
+                    nested_content.push(ch);
+                } else if depth == 1 {
+                    // Save current number at depth 1
+                    if !current_num.is_empty() {
+                        let trimmed = current_num.trim();
+                        // Skip if it contains "Content" or "=" (it's a keyword or property)
+                        if !trimmed.contains("Content") && !trimmed.contains('=') {
+                            if let Ok(id) = trimmed.parse::<i32>() {
+                                item_ids.push(id);
+                            }
+                        }
+                        current_num.clear();
+                    }
+                }
+            }
+            _ => {
+                if depth > 1 {
+                    nested_content.push(ch);
+                } else if depth == 1 {
+                    current_num.push(ch);
+                }
+            }
+        }
+    }
+
+    // Don't forget the last number
+    if !current_num.is_empty() {
+        let trimmed = current_num.trim();
+        if !trimmed.contains("Content") && !trimmed.contains('=') {
+            if let Ok(id) = trimmed.parse::<i32>() {
+                item_ids.push(id);
+            }
+        }
+    }
+
+    item_ids
 }
 
 /// Parse map sector file and extract quest chest data
@@ -1100,16 +1187,47 @@ pub fn parse_map_sector_file(file_path: &Path) -> Result<Vec<QuestChest>> {
             .and_then(|caps| caps.get(1))
             .and_then(|m| m.as_str().parse().ok());
 
-        // Extract item IDs from Content={...}
-        let item_ids = if let Some(caps) = content_re.captures(line) {
-            caps.get(1)
-                .map(|m| {
-                    m.as_str()
-                        .split(',')
-                        .filter_map(|s| s.trim().parse().ok())
-                        .collect()
-                })
-                .unwrap_or_default()
+        // Extract item IDs from Content={...} AFTER ChestQuestNumber
+        // The chest container's Content block comes after the ChestQuestNumber marker
+        let item_ids = if let Some(quest_pos) = line.find("ChestQuestNumber") {
+            let line_after_quest = &line[quest_pos..];
+
+            // Find "Content=" and extract the balanced brace content
+            if let Some(content_start) = line_after_quest.find("Content=") {
+                let after_content = &line_after_quest[content_start + 8..]; // Skip "Content="
+
+                if let Some(brace_start) = after_content.find('{') {
+                    // Find the matching closing brace
+                    let mut depth = 0;
+                    let mut end_pos = None;
+
+                    for (i, ch) in after_content[brace_start..].chars().enumerate() {
+                        match ch {
+                            '{' => depth += 1,
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end_pos = Some(brace_start + i + 1);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if let Some(end) = end_pos {
+                        let content_block = &after_content[brace_start..end];
+                        // Use recursive extraction to handle nested Content blocks
+                        extract_item_ids_from_content(content_block)
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
         } else {
             Vec::new()
         };
@@ -1753,5 +1871,42 @@ Flags       = {Take}
         let items = parse_objects_srv(&file_path).unwrap();
         assert_eq!(items.len(), 1, "Should filter out type_id <= 10");
         assert_eq!(items[0].type_id, 1780);
+    }
+
+    #[test]
+    fn test_parse_npc_file_filters_variable_amount() {
+        let content = r#"
+Name = "Winston"
+
+"sell","war","drum" -> Type=2966, Amount=1, Price=900000
+"sell",%1,1<%1,"war","drum" -> Type=2966, Amount=%1, Price=900000*%1
+"buy","life","ring" -> Type=3052, Amount=1, Price=900
+"#;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_winston.npc");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+
+        let prices = parse_npc_file(&file_path).unwrap();
+
+        // Should only have 2 entries (war drum single and life ring)
+        assert_eq!(prices.len(), 2, "Should have 2 entries, not 3");
+
+        // Check war drum only appears once
+        let war_drum_count = prices.iter().filter(|p| p.item_id == 2966).count();
+        assert_eq!(war_drum_count, 1, "War drum should only appear once");
+
+        // Verify correct mode
+        assert_eq!(prices[0].mode, "sell");
+        assert_eq!(prices[1].mode, "buy");
+
+        // Verify correct item IDs
+        assert_eq!(prices[0].item_id, 2966);
+        assert_eq!(prices[1].item_id, 3052);
+
+        // Verify correct prices
+        assert_eq!(prices[0].price, 900000);
+        assert_eq!(prices[1].price, 900);
     }
 }
