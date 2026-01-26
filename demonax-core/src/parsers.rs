@@ -884,8 +884,9 @@ pub fn parse_objects_srv(file_path: &Path) -> Result<Vec<Item>> {
                         name = Some(title_case_item_name(cleaned));
                     }
                     "Flags" => {
-                        // Split by comma
-                        flags = value.split(',')
+                        // Remove curly braces before splitting
+                        let cleaned = value.trim_matches(|c| c == '{' || c == '}');
+                        flags = cleaned.split(',')
                             .map(|s| s.trim().to_string())
                             .filter(|s| !s.is_empty())
                             .collect();
@@ -927,6 +928,9 @@ pub fn parse_objects_srv(file_path: &Path) -> Result<Vec<Item>> {
 
             // Check for "Take" flag
             if !flags.iter().any(|f| f.eq_ignore_ascii_case("Take")) {
+                if tracing::enabled!(tracing::Level::DEBUG) {
+                    tracing::debug!("Skipping item {} '{}' - no Take flag (flags: {:?})", tid, nm, flags);
+                }
                 continue;
             }
 
@@ -934,9 +938,13 @@ pub fn parse_objects_srv(file_path: &Path) -> Result<Vec<Item>> {
             let attributes_json = serde_json::to_string(&attributes)
                 .unwrap_or_else(|_| "{}".to_string());
 
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                tracing::debug!("Added item {} '{}' with flags: {}", tid, nm, flags.join(", "));
+            }
+
             items.push(Item {
                 type_id: tid,
-                name: nm,
+                name: nm.clone(),
                 flags: flags.join(", "),
                 attributes: attributes_json,
                 description,
@@ -1657,4 +1665,93 @@ pub fn parse_evt_file(file_path: &Path) -> Result<Raid> {
         creatures,
         spawn_composition_json,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_parse_objects_srv_single_flag() {
+        let content = r#"
+TypeID      = 1780
+Name        = "a stone"
+Flags       = {Take}
+Attributes  = {Weight=41000}
+
+TypeID      = 1781
+Name        = "grass"
+Flags       = {Bank,Unmove}
+"#;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_objects.srv");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+
+        let items = parse_objects_srv(&file_path).unwrap();
+        assert_eq!(items.len(), 1, "Should find 1 item with Take flag");
+        assert_eq!(items[0].type_id, 1780);
+        assert_eq!(items[0].name, "Stone");
+        assert_eq!(items[0].flags, "Take");
+    }
+
+    #[test]
+    fn test_parse_objects_srv_take_first_position() {
+        let content = r#"
+TypeID      = 2469
+Name        = "a box"
+Flags       = {Take,Container,Height}
+Attributes  = {Weight=3500,Capacity=10}
+"#;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_objects.srv");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+
+        let items = parse_objects_srv(&file_path).unwrap();
+        assert_eq!(items.len(), 1, "Should find item with Take in first position");
+        assert_eq!(items[0].type_id, 2469);
+        assert!(items[0].flags.contains("Take"));
+    }
+
+    #[test]
+    fn test_parse_objects_srv_take_last_position() {
+        let content = r#"
+TypeID      = 2632
+Name        = "a wall mirror"
+Flags       = {Hang,Take}
+Attributes  = {Weight=1000}
+"#;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_objects.srv");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+
+        let items = parse_objects_srv(&file_path).unwrap();
+        assert_eq!(items.len(), 1, "Should find item with Take in last position");
+        assert_eq!(items[0].type_id, 2632);
+        assert!(items[0].flags.contains("Take"));
+    }
+
+    #[test]
+    fn test_parse_objects_srv_filters_reserved_ids() {
+        let content = r#"
+TypeID      = 5
+Name        = "body container"
+Flags       = {Container,Take}
+
+TypeID      = 1780
+Name        = "a stone"
+Flags       = {Take}
+"#;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_objects.srv");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+
+        let items = parse_objects_srv(&file_path).unwrap();
+        assert_eq!(items.len(), 1, "Should filter out type_id <= 10");
+        assert_eq!(items[0].type_id, 1780);
+    }
 }
