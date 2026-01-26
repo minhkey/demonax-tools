@@ -715,6 +715,28 @@ impl Database {
         Ok(())
     }
 
+    /// Rebuild the item_loot_sources table from creature_loot data.
+    /// This creates a reverse lookup to find which creatures drop each item.
+    /// When a creature has multiple loot entries for the same item, we take the maximum
+    /// drop chance and average value to represent the best drop rate.
+    fn rebuild_item_loot_sources(&self, conn: &Connection) -> Result<usize> {
+        // Clear the table
+        conn.execute("DELETE FROM item_loot_sources", [])?;
+
+        // Aggregate from creature_loot and insert into item_loot_sources
+        // Use MAX to handle cases where the same creature drops the same item multiple times
+        let rows_affected = conn.execute(
+            "INSERT INTO item_loot_sources (item_id, creature_id, drop_chance, average_value)
+             SELECT item_id, creature_id, MAX(chance_percent) as drop_chance, MAX(average_value) as average_value
+             FROM creature_loot
+             GROUP BY item_id, creature_id
+             ORDER BY item_id, creature_id",
+            [],
+        )?;
+
+        Ok(rows_affected)
+    }
+
     /// Process .mon files from a directory.
     /// Returns number of successfully processed files.
     pub fn process_mon_files(
@@ -918,6 +940,24 @@ impl Database {
 
         if quiet == 0 {
             tracing::info!("Processed {} creatures successfully, {} errors", success_count, error_count);
+        }
+
+        // Rebuild item_loot_sources table from creature_loot data
+        if quiet == 0 {
+            tracing::info!("Rebuilding item_loot_sources table from creature_loot data...");
+        }
+        let conn = self.connection()?;
+        match self.rebuild_item_loot_sources(&conn) {
+            Ok(count) => {
+                if quiet == 0 {
+                    tracing::info!("Successfully populated item_loot_sources with {} entries", count);
+                }
+            }
+            Err(e) => {
+                if quiet < 2 {
+                    tracing::warn!("Failed to rebuild item_loot_sources: {}", e);
+                }
+            }
         }
 
         Ok(success_count)
