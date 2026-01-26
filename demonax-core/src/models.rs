@@ -347,6 +347,7 @@ pub struct SpellTeacher {
     pub spell_id: i32,
     pub vocation: String,       // "Knight", "Paladin", "Druid", "Sorcerer"
     pub teaching_price: i32,
+    pub level_required: Option<i32>,  // Populated during database insertion from spells table
 }
 
 /// Rune/wand/rod seller data from .npc files

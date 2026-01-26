@@ -1184,18 +1184,29 @@ impl Database {
 
         let mut inserted_count = 0;
         for teacher in teachers {
+            // Look up spell level from spells table
+            let level_required: Option<i32> = tx
+                .query_row(
+                    "SELECT level FROM spells WHERE id = ?1",
+                    [teacher.spell_id],
+                    |row| row.get(0)
+                )
+                .ok();
+
             tx.execute(
                 "INSERT INTO spell_teachers (npc_name, spell_name, spell_id, vocation, price, level_required)
-                 VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(npc_name, spell_id, vocation) DO UPDATE SET
                     spell_name = excluded.spell_name,
-                    price = excluded.price",
+                    price = excluded.price,
+                    level_required = excluded.level_required",
                 (
                     &teacher.npc_name,
                     format!("Spell {}", teacher.spell_id), // Default spell name, can be joined with spells table
                     teacher.spell_id,
                     &teacher.vocation,
                     teacher.teaching_price,
+                    level_required,
                 ),
             )?;
             inserted_count += 1;

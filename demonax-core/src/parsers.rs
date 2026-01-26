@@ -1359,6 +1359,7 @@ pub fn parse_npc_spell_teaching(file_path: &Path) -> Result<Vec<SpellTeacher>> {
                 spell_id,
                 vocation,
                 teaching_price,
+                level_required: None,  // Will be populated during DB insertion
             });
         }
     }
