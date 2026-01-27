@@ -5,3 +5,6 @@
 /test-output/
 CLAUDE.md
 .claude
+testing/database-queries_files
+testing/database-queries.html
+testing/*.log

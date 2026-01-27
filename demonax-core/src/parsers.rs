@@ -385,7 +385,7 @@ pub fn parse_mon_file(file_path: &Path) -> Result<Creature> {
 
 /// Parse creature loot from .mon file.
 /// Returns a vector of CreatureLoot entries.
-/// Note: This function requires item data to compute average values.
+/// Note: Average loot values are calculated in R code when needed, not stored in the database.
 pub fn parse_creature_loot(file_path: &Path) -> Result<Vec<CreatureLoot>> {
     let text = read_latin1_file(file_path)?;
 
@@ -455,7 +455,6 @@ pub fn parse_creature_loot(file_path: &Path) -> Result<Vec<CreatureLoot>> {
             max_amount,
             chance_raw,
             chance_percent,
-            average_value: 0.0, // Will be calculated later with item data
         });
     }
 

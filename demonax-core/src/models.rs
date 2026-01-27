@@ -134,7 +134,6 @@ pub struct CreatureLoot {
     pub max_amount: i32,
     pub chance_raw: i32,
     pub chance_percent: f64,
-    pub average_value: f64,
 }
 
 /// Database model for creatures table (matches migration)
@@ -162,7 +161,6 @@ pub struct CreatureLootDb {
     pub max_amount: i32,
     pub chance_raw: i32,
     pub chance_percent: f64,
-    pub average_value: f64,
 }
 
 /// Creature flags parsed from .mon file

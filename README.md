@@ -40,26 +40,120 @@ cargo build --release
 ./target/release/demonax
 ```
 
+## Configuration
+
+### Environment Variables
+
+Demonax supports environment variables to avoid repeating common paths:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DEMONAX_DATABASE` | Path to SQLite database | `./demonax.sqlite` |
+| `DEMONAX_GAME_DIR` | Game directory with data files | **(required)** |
+| `DEMONAX_LOG_FILE` | Log file path | `./demonax.log` |
+
+**Example setup:**
+
+```bash
+# Set environment variables once
+export DEMONAX_DATABASE=~/demonax-data/game.sqlite
+export DEMONAX_GAME_DIR=~/tibia_local/game
+export DEMONAX_LOG_FILE=~/logs/demonax.log
+
+# Now run commands without repeating paths
+demonax update-creatures
+demonax update-items-core
+demonax update-spells
+```
+
+**Per-command override:**
+
+Environment variables can be overridden with command-line flags:
+
+```bash
+export DEMONAX_GAME_DIR=~/game
+
+# Use environment variable
+demonax update-creatures
+
+# Override with flag
+demonax update-creatures --game-path ~/different-game
+```
+
 ## Quick Start
 
 ```bash
+# Option 1: Using environment variables (recommended)
+export DEMONAX_DATABASE=./game.sqlite
+export DEMONAX_GAME_DIR=/path/to/game
+
 # Build all game data into a database
-./target/release/demonax --database ./game.sqlite update-creatures --game-path /path/to/game
-./target/release/demonax --database ./game.sqlite update-items-core --game-path /path/to/game
-./target/release/demonax --database ./game.sqlite update-quest-overview --game-path /path/to/game
-./target/release/demonax --database ./game.sqlite update-items-quests --game-path /path/to/game
-./target/release/demonax --database ./game.sqlite update-raids --game-path /path/to/game
-./target/release/demonax --database ./game.sqlite update-harvesting --harvesting-csv /path/to/harvesting.csv
-./target/release/demonax --database ./game.sqlite update-spells --magic-cc /path/to/magic.cc --game-path /path/to/game
-./target/release/demonax --database ./game.sqlite process-usr --input-dir /path/to/game/usr --snapshot-date 2026-01-07
+./target/release/demonax update-creatures
+./target/release/demonax update-items-core
+./target/release/demonax update-quest-overview
+./target/release/demonax update-items-quests
+./target/release/demonax update-raids
+./target/release/demonax update-harvesting --harvesting-csv /path/to/harvesting.csv
+./target/release/demonax update-spells --magic-cc /path/to/magic.cc
+./target/release/demonax process-usr --input-dir $DEMONAX_GAME_DIR/usr --snapshot-date 2026-01-07
 
 # Generate harvesting rules for game engine (no database needed)
 ./target/release/demonax update-move-use-harvesting \
   --csv-path /path/to/harvesting.csv \
-  --moveuse-path /path/to/game/dat/moveuse.dat
+  --moveuse-path $DEMONAX_GAME_DIR/dat/moveuse.dat
+
+# Option 2: Using explicit flags
+./target/release/demonax --database ./game.sqlite update-creatures --game-path /path/to/game
+./target/release/demonax --database ./game.sqlite update-items-core --game-path /path/to/game
+# ... and so on
 
 # Or use the test suite
 ./test-all-commands.sh
+```
+
+## Migration Guide
+
+### Breaking Changes in v0.2.0
+
+**Removed hardcoded paths:**
+- `--game-path` no longer has a default value (previously `/home/cmd/tibia_local/game`)
+- `--log-file` default changed from `/tmp/demonax-tools.log` to `./demonax.log`
+- `--web-path` parameter removed (was unused dead code)
+
+**Migration:**
+
+If you have existing scripts or workflows:
+
+```bash
+# OLD (no longer works)
+demonax update-creatures
+
+# NEW - Option 1: Set environment variable (recommended)
+export DEMONAX_GAME_DIR=/path/to/your/game
+demonax update-creatures
+
+# NEW - Option 2: Use explicit flag
+demonax update-creatures --game-path /path/to/your/game
+```
+
+**For CI/CD or scripts:**
+
+Add environment variables to your workflow:
+
+```bash
+#!/bin/bash
+export DEMONAX_DATABASE=/data/demonax.sqlite
+export DEMONAX_GAME_DIR=/data/game
+export DEMONAX_LOG_FILE=/logs/demonax.log
+
+# Run all commands
+demonax update-creatures
+demonax update-items-core
+demonax update-quest-overview
+demonax update-items-quests
+demonax update-raids
+demonax update-harvesting --harvesting-csv /path/to/harvesting.csv
+demonax update-spells --magic-cc /path/to/magic.cc
 ```
 
 ## Command Reference
@@ -68,8 +162,8 @@ cargo build --release
 
 All commands support these global options:
 
-- `--database <PATH>`: SQLite database file path (default: `./demonax.sqlite`)
-- `--log-file <PATH>`: Log file path for tracing output (default: `/tmp/demonax-tools.log`)
+- `--database <PATH>`: SQLite database file path (env: `DEMONAX_DATABASE`, default: `./demonax.sqlite`)
+- `--log-file <PATH>`: Log file path for tracing output (env: `DEMONAX_LOG_FILE`, default: `./demonax.log`)
 - `-v`, `-vv`, `-vvv`, `-vvvv`: Verbosity levels (0-4 for increasingly detailed logging)
 - `--quiet <0-4>`: Reduce output verbosity (0=normal, 4=silent)
 
@@ -117,6 +211,10 @@ Parse .mon files for creature statistics and loot tables.
 **Syntax:**
 ```bash
 demonax update-creatures --game-path <DIR> [--quiet <0-4>]
+
+# Or using environment variable
+export DEMONAX_GAME_DIR=/path/to/game
+demonax update-creatures [--quiet <0-4>]
 ```
 
 **Purpose:** Extract creature definitions including stats (HP, attack, armor, experience) and loot drop tables.
@@ -619,26 +717,30 @@ This test script will:
 Commands should be executed in this order due to dependencies:
 
 ```bash
+# Set environment variables (recommended)
+export DEMONAX_DATABASE=./demonax.sqlite
+export DEMONAX_GAME_DIR=/path/to/game
+
 # Stage 1: Independent commands (can run in any order)
-demonax update-creatures --game-path /path/to/game
-demonax update-items-core --game-path /path/to/game
-demonax update-quest-overview --game-path /path/to/game
+demonax update-creatures
+demonax update-items-core
+demonax update-quest-overview
 
 # Stage 2: Dependent on items + quests
-demonax update-items-quests --game-path /path/to/game
+demonax update-items-quests
 
 # Stage 3: Independent game data (can run in any order)
-demonax update-raids --game-path /path/to/game
+demonax update-raids
 demonax update-harvesting --harvesting-csv /path/to/harvesting.csv
-demonax update-spells --magic-cc /path/to/magic.cc --game-path /path/to/game
+demonax update-spells --magic-cc /path/to/magic.cc
 
 # Stage 4: Player data (can reference creatures/items)
-demonax process-usr --input-dir /path/to/game/usr --snapshot-date 2026-01-07
+demonax process-usr --input-dir $DEMONAX_GAME_DIR/usr --snapshot-date 2026-01-07
 
 # Standalone: Game engine file generation (no database dependency)
 demonax update-move-use-harvesting \
   --csv-path /path/to/harvesting.csv \
-  --moveuse-path /path/to/game/dat/moveuse.dat
+  --moveuse-path $DEMONAX_GAME_DIR/dat/moveuse.dat
 ```
 
 **Dependency Summary:**
@@ -717,7 +819,6 @@ creature_loot (
   item_count INTEGER NOT NULL,
   chance_raw INTEGER NOT NULL,
   chance_percent REAL NOT NULL,
-  average_value REAL DEFAULT 0.0,
   FOREIGN KEY (creature_id) REFERENCES creatures(id) ON DELETE CASCADE
 )
 
@@ -907,14 +1008,6 @@ JOIN creatures c ON cl.creature_id = c.id
 GROUP BY c.id
 ORDER BY loot_items DESC
 LIMIT 10;
-
--- Average loot value per creature
-SELECT c.name, AVG(cl.average_value) as avg_loot_value
-FROM creature_loot cl
-JOIN creatures c ON cl.creature_id = c.id
-GROUP BY c.id
-ORDER BY avg_loot_value DESC
-LIMIT 20;
 
 -- Find creatures that drop a specific item
 SELECT c.name, cl.chance_percent, cl.item_count

@@ -113,8 +113,7 @@ impl Database {
                 has_loot BOOLEAN NOT NULL DEFAULT FALSE,
                 article TEXT,
                 html_name TEXT,
-                mon_link TEXT,
-                avg_value REAL DEFAULT 0.0
+                mon_link TEXT
             );
 
             CREATE TABLE IF NOT EXISTS creature_loot (
@@ -125,7 +124,6 @@ impl Database {
                 max_amount INTEGER NOT NULL DEFAULT 1,
                 chance_raw INTEGER NOT NULL,
                 chance_percent REAL NOT NULL,
-                average_value REAL DEFAULT 0.0,
                 FOREIGN KEY (creature_id) REFERENCES creatures(id) ON DELETE CASCADE
             );
 
@@ -224,7 +222,6 @@ impl Database {
                 item_id INTEGER NOT NULL,
                 creature_id INTEGER NOT NULL,
                 drop_chance REAL NOT NULL,
-                average_value REAL DEFAULT 0.0,
                 UNIQUE(item_id, creature_id)
             );
 
@@ -608,7 +605,7 @@ impl Database {
         // Insert new loot
         for entry in loot {
             conn.execute(
-                "INSERT INTO creature_loot (creature_id, item_id, min_amount, max_amount, chance_raw, chance_percent, average_value) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO creature_loot (creature_id, item_id, min_amount, max_amount, chance_raw, chance_percent) VALUES (?, ?, ?, ?, ?, ?)",
                 params![
                     creature_id,
                     entry.item_id,
@@ -616,7 +613,6 @@ impl Database {
                     entry.max_amount,
                     entry.chance_raw,
                     entry.chance_percent,
-                    entry.average_value,
                 ],
             )?;
         }
@@ -723,8 +719,8 @@ impl Database {
         // Aggregate from creature_loot and insert into item_loot_sources
         // Use MAX to handle cases where the same creature drops the same item multiple times
         let rows_affected = conn.execute(
-            "INSERT INTO item_loot_sources (item_id, creature_id, drop_chance, average_value)
-             SELECT item_id, creature_id, MAX(chance_percent) as drop_chance, MAX(average_value) as average_value
+            "INSERT INTO item_loot_sources (item_id, creature_id, drop_chance)
+             SELECT item_id, creature_id, MAX(chance_percent) as drop_chance
              FROM creature_loot
              GROUP BY item_id, creature_id
              ORDER BY item_id, creature_id",

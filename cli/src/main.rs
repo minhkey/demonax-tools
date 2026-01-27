@@ -21,11 +21,22 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 )]
 struct Cli {
     /// Path to SQLite database file
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        env = "DEMONAX_DATABASE",
+        help = "Path to SQLite database file (env: DEMONAX_DATABASE, default: ./demonax.sqlite)"
+    )]
     database: Option<std::path::PathBuf>,
 
     /// Path to log file
-    #[arg(long, global = true, default_value = "/tmp/demonax-tools.log")]
+    #[arg(
+        long,
+        global = true,
+        env = "DEMONAX_LOG_FILE",
+        default_value = "demonax.log",
+        help = "Path to log file (env: DEMONAX_LOG_FILE, default: ./demonax.log)"
+    )]
     log_file: std::path::PathBuf,
 
     /// Verbosity level (repeat for more verbose output)
@@ -54,11 +65,12 @@ enum Commands {
     /// Update creature data
     UpdateCreatures {
         /// Game directory with mon/ subdirectory
-        #[arg(long, default_value = "/home/cmd/tibia_local/game")]
+        #[arg(
+            long,
+            env = "DEMONAX_GAME_DIR",
+            help = "Game directory with mon/ subdirectory (env: DEMONAX_GAME_DIR)"
+        )]
         game_path: std::path::PathBuf,
-        /// Web directory for output files
-        #[arg(long, default_value = "/home/cmd/Documents/demonax/demonax-web")]
-        web_path: std::path::PathBuf,
         /// Quiet mode
         #[arg(long, default_value_t = 0)]
         quiet: u8,
@@ -67,11 +79,12 @@ enum Commands {
     /// Update core item data
     UpdateItemsCore {
         /// Game directory with dat/, mon/, npc/ subdirectories
-        #[arg(long, default_value = "/home/cmd/tibia_local/game")]
+        #[arg(
+            long,
+            env = "DEMONAX_GAME_DIR",
+            help = "Game directory with dat/, mon/, npc/ subdirectories (env: DEMONAX_GAME_DIR)"
+        )]
         game_path: std::path::PathBuf,
-        /// Web directory for output files
-        #[arg(long, default_value = "/home/cmd/Documents/demonax/demonax-web")]
-        web_path: std::path::PathBuf,
         /// Quiet mode
         #[arg(long, default_value_t = 0)]
         quiet: u8,
@@ -80,11 +93,12 @@ enum Commands {
     /// Add quest reward information to items
     UpdateItemsQuests {
         /// Game directory with map files
-        #[arg(long, default_value = "/home/cmd/tibia_local/game")]
+        #[arg(
+            long,
+            env = "DEMONAX_GAME_DIR",
+            help = "Game directory with map files (env: DEMONAX_GAME_DIR)"
+        )]
         game_path: std::path::PathBuf,
-        /// Web directory for output files
-        #[arg(long, default_value = "/home/cmd/Documents/demonax/demonax-web")]
-        web_path: std::path::PathBuf,
         /// Quiet mode
         #[arg(long, default_value_t = 0)]
         quiet: u8,
@@ -93,11 +107,12 @@ enum Commands {
     /// Process map files for quest chest locations
     UpdateQuestOverview {
         /// Game directory with map files
-        #[arg(long, default_value = "/home/cmd/tibia_local/game")]
+        #[arg(
+            long,
+            env = "DEMONAX_GAME_DIR",
+            help = "Game directory with map files (env: DEMONAX_GAME_DIR)"
+        )]
         game_path: std::path::PathBuf,
-        /// Web directory for output files
-        #[arg(long, default_value = "/home/cmd/Documents/demonax/demonax-web")]
-        web_path: std::path::PathBuf,
         /// Path to quest CSV file with quest names
         #[arg(long)]
         quest_csv: Option<std::path::PathBuf>,
@@ -109,11 +124,12 @@ enum Commands {
     /// Update raid data
     UpdateRaids {
         /// Game directory with raid files
-        #[arg(long, default_value = "/home/cmd/tibia_local/game")]
+        #[arg(
+            long,
+            env = "DEMONAX_GAME_DIR",
+            help = "Game directory with raid files (env: DEMONAX_GAME_DIR)"
+        )]
         game_path: std::path::PathBuf,
-        /// Web directory for output files
-        #[arg(long, default_value = "/home/cmd/Documents/demonax/demonax-web")]
-        web_path: std::path::PathBuf,
         /// Quiet mode
         #[arg(long, default_value_t = 0)]
         quiet: u8,
@@ -122,14 +138,15 @@ enum Commands {
     /// Update harvesting data
     UpdateHarvesting {
         /// Game directory with harvesting files
-        #[arg(long, default_value = "/home/cmd/tibia_local/game")]
+        #[arg(
+            long,
+            env = "DEMONAX_GAME_DIR",
+            help = "Game directory with harvesting files (env: DEMONAX_GAME_DIR)"
+        )]
         game_path: std::path::PathBuf,
         /// Custom path to harvesting.csv (optional)
         #[arg(long)]
         harvesting_csv: Option<std::path::PathBuf>,
-        /// Web directory for output files
-        #[arg(long, default_value = "/home/cmd/Documents/demonax/demonax-web")]
-        web_path: std::path::PathBuf,
         /// Quiet mode
         #[arg(long, default_value_t = 0)]
         quiet: u8,
@@ -138,14 +155,15 @@ enum Commands {
     /// Update spell data
     UpdateSpells {
         /// Game directory with spell files
-        #[arg(long, default_value = "/home/cmd/tibia_local/game")]
+        #[arg(
+            long,
+            env = "DEMONAX_GAME_DIR",
+            help = "Game directory with spell files (env: DEMONAX_GAME_DIR)"
+        )]
         game_path: std::path::PathBuf,
         /// Custom path to magic.cc (optional)
         #[arg(long)]
         magic_cc: Option<std::path::PathBuf>,
-        /// Web directory for output files
-        #[arg(long, default_value = "/home/cmd/Documents/demonax/demonax-web")]
-        web_path: std::path::PathBuf,
         /// Quiet mode
         #[arg(long, default_value_t = 0)]
         quiet: u8,
@@ -254,14 +272,14 @@ async fn main() -> Result<()> {
             let processed = db.process_usr_files(&input_dir, &snapshot_date, quiet)?;
             info!("Successfully processed {} .usr files", processed);
         }
-        Commands::UpdateCreatures { game_path, web_path: _, quiet } => {
+        Commands::UpdateCreatures { game_path, quiet } => {
             let db_path = cli.database.unwrap_or_else(|| std::path::PathBuf::from("./demonax.sqlite"));
             let db = Database::new(&db_path)?;
             let processed = db.process_mon_files(&game_path, quiet)?;
             info!("Successfully processed {} .mon files", processed);
             // TODO: Generate CSV exports for backward compatibility
         }
-        Commands::UpdateItemsCore { game_path, web_path: _, quiet } => {
+        Commands::UpdateItemsCore { game_path, quiet } => {
             let db_path = cli.database.unwrap_or_else(|| std::path::PathBuf::from("./demonax.sqlite"));
             let db = Database::new(&db_path)?;
 
@@ -336,7 +354,7 @@ async fn main() -> Result<()> {
                 info!("Item processing complete. Data stored in database: {:?}", db_path);
             }
         }
-        Commands::UpdateItemsQuests { game_path: _, web_path: _, quiet } => {
+        Commands::UpdateItemsQuests { game_path: _, quiet } => {
             let db_path = cli.database.unwrap_or_else(|| std::path::PathBuf::from("./demonax.sqlite"));
             let db = Database::new(&db_path)?;
 
@@ -352,7 +370,7 @@ async fn main() -> Result<()> {
                 info!("Items table now includes 'rewarded_from' column with quest names");
             }
         }
-        Commands::UpdateQuestOverview { game_path, web_path: _, quest_csv, quiet } => {
+        Commands::UpdateQuestOverview { game_path, quest_csv, quiet } => {
             let db_path = cli.database.unwrap_or_else(|| std::path::PathBuf::from("./demonax.sqlite"));
             let db = Database::new(&db_path)?;
 
@@ -425,7 +443,7 @@ async fn main() -> Result<()> {
                 info!("Successfully processed {} quests into database: {:?}", processed, db_path);
             }
         }
-        Commands::UpdateRaids { game_path, web_path: _, quiet } => {
+        Commands::UpdateRaids { game_path, quiet } => {
             let db_path = cli.database.unwrap_or_else(|| std::path::PathBuf::from("./demonax.sqlite"));
             let db = Database::new(&db_path)?;
 
@@ -484,7 +502,7 @@ async fn main() -> Result<()> {
                 info!("Note: Creature names can be enriched by querying creatures table");
             }
         }
-        Commands::UpdateHarvesting { game_path, harvesting_csv, web_path: _, quiet } => {
+        Commands::UpdateHarvesting { game_path, harvesting_csv, quiet } => {
             let db_path = cli.database.unwrap_or_else(|| std::path::PathBuf::from("./demonax.sqlite"));
             let db = Database::new(&db_path)?;
 
@@ -544,7 +562,7 @@ async fn main() -> Result<()> {
                 anyhow::bail!("harvesting.csv not found in any standard location");
             }
         }
-        Commands::UpdateSpells { game_path, magic_cc, web_path: _, quiet } => {
+        Commands::UpdateSpells { game_path, magic_cc, quiet } => {
             let db_path = cli.database.unwrap_or_else(|| std::path::PathBuf::from("./demonax.sqlite"));
             let db = Database::new(&db_path)?;
 
