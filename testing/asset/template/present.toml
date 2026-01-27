@@ -1,0 +1,43 @@
+# Friday Present Configuration
+# This matches the original give_present.sh present contents
+#
+# Item IDs:
+#   2854 = Present box (container)
+#   3726 = Orange mushroom
+#   3155 = Sudden Death rune
+#   3160 = Ultimate Healing rune
+#   3189 = Great Energy Beam rune
+#   3191 = Great Fireball rune
+#   3200 = Explosion rune
+#   3198 = Heavy Magic Missile rune
+
+[container]
+type_id = 2854
+
+[[items]]
+type_id = 3726
+amount = 99
+
+[[items]]
+type_id = 3155
+charges = 35
+
+[[items]]
+type_id = 3160
+charges = 70
+
+[[items]]
+type_id = 3189
+charges = 70
+
+[[items]]
+type_id = 3191
+charges = 70
+
+[[items]]
+type_id = 3200
+charges = 70
+
+[[items]]
+type_id = 3198
+charges = 100
