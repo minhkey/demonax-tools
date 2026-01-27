@@ -891,8 +891,10 @@ pub fn parse_objects_srv(file_path: &Path) -> Result<Vec<Item>> {
                             .collect();
                     }
                     "Attributes" => {
+                        // Remove curly braces before splitting
+                        let cleaned = value.trim_matches(|c| c == '{' || c == '}');
                         // Parse attributes like "MinimumLevel=50, Weight=10"
-                        for attr in value.split(',') {
+                        for attr in cleaned.split(',') {
                             if let Some((attr_key, attr_val)) = attr.split_once('=') {
                                 attributes.insert(
                                     attr_key.trim().to_string(),

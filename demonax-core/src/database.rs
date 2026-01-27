@@ -1105,7 +1105,14 @@ impl Database {
                         END,
                         excluded.chest_location
                     ),
-                    reward_items_json = excluded.reward_items_json",
+                    reward_items_json = (
+                        SELECT json_group_array(DISTINCT value)
+                        FROM (
+                            SELECT value FROM json_each(reward_items_json)
+                            UNION
+                            SELECT value FROM json_each(excluded.reward_items_json)
+                        )
+                    )",
                 (
                     chest.quest_value,
                     &chest_location,
