@@ -361,6 +361,16 @@ pub struct RuneSeller {
     pub item_category: String,         // "rune", "wand", "rod"
 }
 
+/// NPC location data parsed from .npc files
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NpcLocation {
+    pub file_name: String,  // Filename without extension
+    pub npc_name: String,   // From Name = "..."
+    pub x: i32,            // X coordinate
+    pub y: i32,            // Y coordinate
+    pub z: i32,            // Z coordinate (level)
+}
+
 /// Harvesting data entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarvestingData {

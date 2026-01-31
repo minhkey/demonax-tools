@@ -318,6 +318,19 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_rune_sellers_item_id ON rune_sellers(item_id);
             CREATE INDEX IF NOT EXISTS idx_rune_sellers_spell_id ON rune_sellers(spell_id);
             CREATE INDEX IF NOT EXISTS idx_rune_sellers_npc_name ON rune_sellers(npc_name);
+
+            CREATE TABLE IF NOT EXISTS npc_locations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_name TEXT NOT NULL UNIQUE,
+                npc_name TEXT NOT NULL,
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL,
+                z INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_npc_locations_file_name ON npc_locations(file_name);
+            CREATE INDEX IF NOT EXISTS idx_npc_locations_npc_name ON npc_locations(npc_name);
+            CREATE INDEX IF NOT EXISTS idx_npc_locations_coords ON npc_locations(x, y, z);
             "#,
         )?;
 
@@ -1346,6 +1359,38 @@ impl Database {
                     seller.charges,
                     &seller.account_type,
                     &seller.item_category,
+                ),
+            )?;
+            inserted_count += 1;
+        }
+
+        tx.commit()?;
+        Ok(inserted_count)
+    }
+
+    /// Clear and insert NPC location data from .npc files
+    pub fn clear_and_insert_npc_locations(
+        &self,
+        locations: &[crate::models::NpcLocation]
+    ) -> Result<usize> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction()?;
+
+        // Clear existing data
+        tx.execute("DELETE FROM npc_locations", ())?;
+
+        let mut inserted_count = 0;
+
+        for location in locations {
+            tx.execute(
+                "INSERT INTO npc_locations (file_name, npc_name, x, y, z)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                (
+                    &location.file_name,
+                    &location.npc_name,
+                    location.x,
+                    location.y,
+                    location.z,
                 ),
             )?;
             inserted_count += 1;

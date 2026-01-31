@@ -8,7 +8,7 @@ Demonax Tools processes various game data files including:
 - Player character data (.usr files)
 - Creature/monster definitions (.mon files)
 - Item metadata (objects.srv binary format)
-- NPC data and prices (.npc files)
+- NPC data, prices, and locations (.npc files)
 - Map sectors and quest locations (.sec files)
 - Raid events (.evt files)
 - Spell definitions (magic.cc source code)
@@ -95,6 +95,7 @@ export DEMONAX_GAME_DIR=/path/to/game
 ./target/release/demonax update-raids
 ./target/release/demonax update-harvesting --harvesting-csv /path/to/harvesting.csv
 ./target/release/demonax update-spells --magic-cc /path/to/magic.cc
+./target/release/demonax update-npc-locations
 ./target/release/demonax process-usr --input-dir $DEMONAX_GAME_DIR/usr --snapshot-date 2026-01-07
 
 # Generate harvesting rules for game engine (no database needed)
@@ -154,6 +155,7 @@ demonax update-items-quests
 demonax update-raids
 demonax update-harvesting --harvesting-csv /path/to/harvesting.csv
 demonax update-spells --magic-cc /path/to/magic.cc
+demonax update-npc-locations
 ```
 
 ## Command Reference
@@ -477,7 +479,44 @@ demonax --database ./demonax.sqlite update-spells \
 
 ---
 
-### 9. update-move-use-harvesting - Generate Harvesting Rules for moveuse.dat
+### 9. update-npc-locations - Extract NPC Locations
+
+Parse .npc files to extract NPC home coordinates.
+
+**Syntax:**
+```bash
+demonax update-npc-locations --game-path <DIR> [--quiet <0-2>]
+```
+
+**Purpose:** Extract NPC location data from .npc files, including file name, NPC name, and home coordinates (x, y, z).
+
+**Inputs:**
+- `--game-path`: Game directory containing `npc/` subdirectory
+- `.npc` files: NPC definitions with `Name = "..."` and `Home = [x,y,z]` fields
+
+**Outputs:**
+- Database table:
+  - `npc_locations`: File name, NPC name, x/y/z coordinates
+
+**Performance:** < 1 second for 352 .npc files (parallel processing)
+
+**Example:**
+```bash
+demonax --database ./demonax.sqlite update-npc-locations \
+  --game-path /home/cmd/tibia_local/game
+```
+
+**Test Output:** 352 NPC locations
+
+**Data Notes:**
+- Processes .npc files in parallel using rayon
+- Each NPC has one home location (spawning point)
+- Coordinates represent world map positions
+- Useful for map rendering, distance calculations, and NPC lookup tools
+
+---
+
+### 10. update-move-use-harvesting - Generate Harvesting Rules for moveuse.dat
 
 Generate MultiUse harvesting rules from CSV and insert them into moveuse.dat.
 
@@ -544,7 +583,7 @@ demonax update-move-use-harvesting \
 
 ---
 
-### 10. give-present - Give Presents to Players
+### 11. give-present - Give Presents to Players
 
 Modify player .usr files to give presents (items placed in inventory slots).
 
@@ -615,7 +654,7 @@ Errors: 0
 
 ---
 
-### 11. render-equipment - Render Player Equipment Images
+### 12. render-equipment - Render Player Equipment Images
 
 Generate equipment visualization images for players from database snapshots.
 
@@ -733,6 +772,7 @@ demonax update-items-quests
 demonax update-raids
 demonax update-harvesting --harvesting-csv /path/to/harvesting.csv
 demonax update-spells --magic-cc /path/to/magic.cc
+demonax update-npc-locations
 
 # Stage 4: Player data (can reference creatures/items)
 demonax process-usr --input-dir $DEMONAX_GAME_DIR/usr --snapshot-date 2026-01-07
@@ -912,6 +952,15 @@ rune_sellers (
   account_type TEXT,
   item_category TEXT NOT NULL CHECK(item_category IN ('rune', 'wand', 'rod')),
   UNIQUE(npc_name, item_id, vocation)
+)
+
+npc_locations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_name TEXT NOT NULL UNIQUE,
+  npc_name TEXT NOT NULL,
+  x INTEGER NOT NULL,
+  y INTEGER NOT NULL,
+  z INTEGER NOT NULL
 )
 ```
 
@@ -1186,6 +1235,43 @@ WHERE corpse_id = 3101  -- Example corpse ID
 ORDER BY percent_chance DESC;
 ```
 
+### NPC Location Data
+
+```sql
+-- All NPC locations
+SELECT file_name, npc_name, x, y, z
+FROM npc_locations
+ORDER BY npc_name;
+
+-- Find NPCs in a specific area
+SELECT file_name, npc_name, x, y, z
+FROM npc_locations
+WHERE x BETWEEN 32000 AND 33000
+  AND y BETWEEN 31000 AND 32000
+ORDER BY x, y;
+
+-- Find nearest NPCs to a coordinate
+SELECT file_name, npc_name,
+       ABS(x - 33062) + ABS(y - 32831) as distance
+FROM npc_locations
+ORDER BY distance
+LIMIT 10;
+
+-- NPCs by floor level
+SELECT z as floor, COUNT(*) as npc_count
+FROM npc_locations
+GROUP BY z
+ORDER BY npc_count DESC;
+
+-- Cross-reference NPC locations with item prices
+SELECT nl.npc_name, nl.x, nl.y, nl.z,
+       COUNT(DISTINCT ip.item_id) as items_sold
+FROM npc_locations nl
+LEFT JOIN item_prices ip ON nl.npc_name = ip.npc_name
+GROUP BY nl.file_name
+ORDER BY items_sold DESC;
+```
+
 ---
 
 ## Testing
@@ -1199,12 +1285,12 @@ Run the comprehensive test suite:
 This script:
 - Builds the CLI with `cargo build --release`
 - Creates a fresh test database at `test-output/demonax-test.sqlite`
-- Runs all 8 commands in the correct dependency order
+- Runs all 9 commands in the correct dependency order
 - Uses test data from `DEV/game/`
 - Displays timing for each command
 - Shows database summary with row counts for all tables
 
-**Expected total runtime:** ~9 seconds
+**Expected total runtime:** ~10 seconds
 
 **Test data includes:**
 - 202 .mon files (creatures)
@@ -1230,12 +1316,13 @@ Based on test data in `DEV/game/`:
 | update-raids        | 35 .evt             | 0.3s  | 34 raids                   |
 | update-harvesting   | 1 CSV               | 0.02s | 26 recipes                 |
 | update-spells       | 1 .cc + 352 .npc    | 0.95s | 108 spells, 637 teachers, 69 sellers |
+| update-npc-locations | 352 .npc           | 0.6s  | 352 NPC locations          |
 | process-usr         | 18 .usr             | 0.25s | 18 players, 18 snapshots   |
 | update-move-use-harvesting | 1 CSV        | 0.02s | 56 rules in moveuse.dat    |
 | give-present       | 18 .usr             | 0.1s  | 15 gifted, 3 skipped       |
 | render-equipment   | DB + 180 item PNGs  | 0.02s | 18 equipment images        |
 
-**Total:** ~9 seconds, ~50-100 MB database (depending on loot/quest data volume)
+**Total:** ~10 seconds, ~50-100 MB database (depending on loot/quest data volume)
 
 **Performance characteristics:**
 - Parallel processing: .npc and .sec files processed using rayon

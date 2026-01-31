@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use demonax_core::database::Database;
 use demonax_core::file_utils::find_files_with_extension;
-use demonax_core::parsers::{parse_evt_file, parse_magic_cc, parse_map_sector_file, parse_npc_file, parse_npc_rune_selling, parse_npc_spell_teaching, parse_objects_srv};
+use demonax_core::parsers::{parse_evt_file, parse_magic_cc, parse_map_sector_file, parse_npc_file, parse_npc_location, parse_npc_rune_selling, parse_npc_spell_teaching, parse_objects_srv};
 use demonax_core::models::HarvestingData;
 use demonax_core::{generate_all_harvesting_rules, insert_harvesting_rules};
 use demonax_core::present::{apply_present_to_file, GiftResult, GiftSummary, PresentConfig};
@@ -165,6 +165,21 @@ enum Commands {
         #[arg(long)]
         magic_cc: Option<std::path::PathBuf>,
         /// Quiet mode
+        #[arg(long, default_value_t = 0)]
+        quiet: u8,
+    },
+
+    /// Update NPC location data
+    UpdateNpcLocations {
+        /// Game directory with npc/ subdirectory
+        #[arg(
+            long,
+            env = "DEMONAX_GAME_DIR",
+            help = "Game directory with npc/ subdirectory (env: DEMONAX_GAME_DIR)"
+        )]
+        game_path: std::path::PathBuf,
+
+        /// Quiet mode (0=show messages/warnings, 1=suppress messages, 2=suppress both)
         #[arg(long, default_value_t = 0)]
         quiet: u8,
     },
@@ -712,6 +727,56 @@ async fn main() -> Result<()> {
 
             if quiet == 0 {
                 info!("Spell processing complete. Data stored in database: {:?}", db_path);
+            }
+        }
+        Commands::UpdateNpcLocations { game_path, quiet } => {
+            let db_path = cli.database.unwrap_or_else(||
+                std::path::PathBuf::from("./demonax.sqlite")
+            );
+            let db = Database::new(&db_path)?;
+
+            if quiet == 0 {
+                info!("Processing NPC location data from {:?}", game_path);
+            }
+
+            // Find all .npc files
+            let npc_dir = game_path.join("npc");
+            if !npc_dir.exists() {
+                anyhow::bail!("NPC directory not found at {:?}", npc_dir);
+            }
+
+            let npc_files = find_files_with_extension(&npc_dir, "npc")?;
+
+            if quiet == 0 {
+                info!("Found {} .npc files", npc_files.len());
+            }
+
+            // Parse all .npc files in parallel
+            let all_locations: Vec<_> = npc_files
+                .par_iter()
+                .filter_map(|path| {
+                    match parse_npc_location(path) {
+                        Ok(location) => Some(location),
+                        Err(e) => {
+                            if quiet < 2 {
+                                tracing::warn!("Failed to parse {:?}: {}", path, e);
+                            }
+                            None
+                        }
+                    }
+                })
+                .collect();
+
+            if quiet == 0 {
+                info!("Parsed {} NPC locations successfully", all_locations.len());
+            }
+
+            // Insert into database
+            let inserted = db.clear_and_insert_npc_locations(&all_locations)?;
+
+            if quiet == 0 {
+                info!("Successfully stored {} NPC locations in database: {:?}",
+                      inserted, db_path);
             }
         }
         Commands::UpdateMoveUseHarvesting { csv_path, moveuse_path } => {
