@@ -96,6 +96,7 @@ export DEMONAX_GAME_DIR=/path/to/game
 ./target/release/demonax update-harvesting --harvesting-csv /path/to/harvesting.csv
 ./target/release/demonax update-spells --magic-cc /path/to/magic.cc
 ./target/release/demonax update-npc-locations
+./target/release/demonax update-boss-locations
 ./target/release/demonax process-usr --input-dir $DEMONAX_GAME_DIR/usr --snapshot-date 2026-01-07
 
 # Generate harvesting rules for game engine (no database needed)
@@ -156,6 +157,7 @@ demonax update-raids
 demonax update-harvesting --harvesting-csv /path/to/harvesting.csv
 demonax update-spells --magic-cc /path/to/magic.cc
 demonax update-npc-locations
+demonax update-boss-locations
 ```
 
 ## Command Reference
@@ -516,7 +518,69 @@ demonax --database ./demonax.sqlite update-npc-locations \
 
 ---
 
-### 10. update-move-use-harvesting - Generate Harvesting Rules for moveuse.dat
+### 10. update-boss-locations - Extract Boss Spawn Locations
+
+Parse monster.db to extract boss spawn locations and coordinates.
+
+**Syntax:**
+```bash
+demonax update-boss-locations --game-path <DIR> [--monster-db <PATH>] [--quiet <0-2>]
+```
+
+**Purpose:** Extract boss spawn location data from monster.db, filtering only boss creatures (no article prefix) and storing their coordinates in the database.
+
+**Inputs:**
+- `--game-path`: Game directory containing `dat/monster.db`
+- `--monster-db`: Custom path to monster.db (optional)
+- Searches standard locations for monster.db if custom path not provided:
+  - `game-path/dat/monster.db`
+  - `game-path/dat/monsters.db`
+  - `game-path/monster.db`
+- `monster.db` format: `race_id x y z radius amount regen` (space-separated)
+
+**Outputs:**
+- Database table:
+  - `boss_locations`: race_id, boss_name, file_name, x/y/z coordinates
+
+**Performance:** < 1 second for 11,751 spawn locations (filters to boss spawns only)
+
+**Example:**
+```bash
+demonax --database ./demonax.sqlite update-boss-locations \
+  --game-path /home/cmd/tibia_local/game
+```
+
+**Test Output:** 27 bosses, 17 boss spawn locations
+
+**Data Notes:**
+- Only processes bosses (creatures without articles like "a" or "an")
+- Bosses identified by empty article field in creature definitions
+- A boss can have multiple spawn locations (no unique constraints)
+- Coordinates represent world map positions
+- Useful for boss hunting maps, spawn tracking, and location-based queries
+- Cross-references with creatures table to enrich spawn data with boss names
+
+**Boss Identification:**
+- Regular creatures have articles: "a demon", "a dragon", "a rotworm" → NOT included
+- Boss creatures have no article: "Ferumbras", "Ghazbaran", "Demodras" → Included
+
+**Example Query:**
+```sql
+-- Find all spawn locations for a specific boss
+SELECT boss_name, x, y, z FROM boss_locations WHERE boss_name = 'Ferumbras';
+
+-- Find bosses spawning in a specific area
+SELECT DISTINCT boss_name FROM boss_locations
+WHERE x BETWEEN 32000 AND 33000 AND y BETWEEN 31000 AND 32000;
+
+-- Count spawn locations per boss
+SELECT boss_name, COUNT(*) as spawn_count FROM boss_locations
+GROUP BY boss_name ORDER BY spawn_count DESC;
+```
+
+---
+
+### 11. update-move-use-harvesting - Generate Harvesting Rules for moveuse.dat
 
 Generate MultiUse harvesting rules from CSV and insert them into moveuse.dat.
 
@@ -583,7 +647,7 @@ demonax update-move-use-harvesting \
 
 ---
 
-### 11. give-present - Give Presents to Players
+### 12. give-present - Give Presents to Players
 
 Modify player .usr files to give presents (items placed in inventory slots).
 
@@ -654,7 +718,7 @@ Errors: 0
 
 ---
 
-### 12. render-equipment - Render Player Equipment Images
+### 13. render-equipment - Render Player Equipment Images
 
 Generate equipment visualization images for players from database snapshots.
 
@@ -773,6 +837,7 @@ demonax update-raids
 demonax update-harvesting --harvesting-csv /path/to/harvesting.csv
 demonax update-spells --magic-cc /path/to/magic.cc
 demonax update-npc-locations
+demonax update-boss-locations
 
 # Stage 4: Player data (can reference creatures/items)
 demonax process-usr --input-dir $DEMONAX_GAME_DIR/usr --snapshot-date 2026-01-07
@@ -958,6 +1023,16 @@ npc_locations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   file_name TEXT NOT NULL UNIQUE,
   npc_name TEXT NOT NULL,
+  x INTEGER NOT NULL,
+  y INTEGER NOT NULL,
+  z INTEGER NOT NULL
+)
+
+boss_locations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  race_id INTEGER NOT NULL,
+  boss_name TEXT NOT NULL,
+  file_name TEXT NOT NULL,
   x INTEGER NOT NULL,
   y INTEGER NOT NULL,
   z INTEGER NOT NULL
@@ -1272,6 +1347,62 @@ GROUP BY nl.file_name
 ORDER BY items_sold DESC;
 ```
 
+### Boss Location Data
+
+```sql
+-- All boss spawn locations
+SELECT boss_name, file_name, x, y, z
+FROM boss_locations
+ORDER BY boss_name;
+
+-- Find spawn locations for a specific boss
+SELECT boss_name, x, y, z
+FROM boss_locations
+WHERE boss_name = 'Ferumbras';
+
+-- Find all bosses spawning in a specific area
+SELECT DISTINCT boss_name, COUNT(*) as spawn_count
+FROM boss_locations
+WHERE x BETWEEN 32000 AND 33000
+  AND y BETWEEN 31000 AND 32000
+GROUP BY boss_name
+ORDER BY spawn_count DESC;
+
+-- Count spawn locations per boss
+SELECT boss_name, COUNT(*) as spawn_count
+FROM boss_locations
+GROUP BY boss_name
+ORDER BY spawn_count DESC;
+
+-- Find nearest boss spawn to a coordinate
+SELECT boss_name, x, y, z,
+       ABS(x - 32480) + ABS(y - 31613) as distance
+FROM boss_locations
+ORDER BY distance
+LIMIT 10;
+
+-- Bosses by floor level
+SELECT z as floor, COUNT(DISTINCT boss_name) as boss_count
+FROM boss_locations
+GROUP BY z
+ORDER BY boss_count DESC;
+
+-- Cross-reference boss locations with creature data
+SELECT bl.boss_name, bl.x, bl.y, bl.z,
+       c.hp, c.experience
+FROM boss_locations bl
+JOIN creatures c ON bl.race_id = c.race
+WHERE c.experience > 1000
+ORDER BY c.experience DESC;
+
+-- Find bosses without spawn locations (in creatures but not in boss_locations)
+SELECT c.name, c.race
+FROM creatures c
+WHERE c.type = 'Boss'
+  AND c.race NOT IN (SELECT DISTINCT race_id FROM boss_locations)
+ORDER BY c.name;
+```
+
 ---
 
 ## Testing
@@ -1317,6 +1448,7 @@ Based on test data in `DEV/game/`:
 | update-harvesting   | 1 CSV               | 0.02s | 26 recipes                 |
 | update-spells       | 1 .cc + 352 .npc    | 0.95s | 108 spells, 637 teachers, 69 sellers |
 | update-npc-locations | 352 .npc           | 0.6s  | 352 NPC locations          |
+| update-boss-locations | monster.db        | 0.5s  | 17 boss spawn locations    |
 | process-usr         | 18 .usr             | 0.25s | 18 players, 18 snapshots   |
 | update-move-use-harvesting | 1 CSV        | 0.02s | 56 rules in moveuse.dat    |
 | give-present       | 18 .usr             | 0.1s  | 15 gifted, 3 skipped       |

@@ -184,6 +184,25 @@ enum Commands {
         quiet: u8,
     },
 
+    /// Update boss location data from monster.db
+    UpdateBossLocations {
+        /// Game directory containing dat/monster.db
+        #[arg(
+            long,
+            env = "DEMONAX_GAME_DIR",
+            help = "Game directory containing dat/monster.db (env: DEMONAX_GAME_DIR)"
+        )]
+        game_path: std::path::PathBuf,
+
+        /// Custom path to monster.db (optional)
+        #[arg(long)]
+        monster_db: Option<std::path::PathBuf>,
+
+        /// Quiet mode (0=show messages/warnings, 1=suppress messages, 2=suppress both)
+        #[arg(long, default_value_t = 0)]
+        quiet: u8,
+    },
+
     /// Update moveuse.dat with harvesting rules from CSV
     UpdateMoveUseHarvesting {
         /// Path to harvesting.csv
@@ -776,6 +795,60 @@ async fn main() -> Result<()> {
 
             if quiet == 0 {
                 info!("Successfully stored {} NPC locations in database: {:?}",
+                      inserted, db_path);
+            }
+        }
+        Commands::UpdateBossLocations { game_path, monster_db, quiet } => {
+            let db_path = cli.database.unwrap_or_else(||
+                std::path::PathBuf::from("./demonax.sqlite")
+            );
+            let db = Database::new(&db_path)?;
+
+            if quiet == 0 {
+                info!("Processing boss location data from monster.db");
+            }
+
+            // Resolve monster.db path
+            let monster_db_path = if let Some(custom_path) = monster_db {
+                // Use custom path
+                if !custom_path.exists() {
+                    anyhow::bail!("Custom monster.db not found at {:?}", custom_path);
+                }
+                custom_path
+            } else {
+                // Search in standard locations
+                let candidates = vec![
+                    game_path.join("dat/monster.db"),
+                    game_path.join("dat/monsters.db"),
+                    game_path.join("monster.db"),
+                ];
+
+                let mut found_path = None;
+                for candidate in candidates {
+                    if candidate.exists() {
+                        found_path = Some(candidate);
+                        break;
+                    }
+                }
+
+                match found_path {
+                    Some(path) => path,
+                    None => anyhow::bail!(
+                        "monster.db not found. Searched in: {:?}/dat/monster.db, {:?}/dat/monsters.db, {:?}/monster.db",
+                        game_path, game_path, game_path
+                    ),
+                }
+            };
+
+            if quiet == 0 {
+                info!("Using monster.db at {:?}", monster_db_path);
+            }
+
+            // Call database method to process and insert boss locations
+            let inserted = db.clear_and_insert_boss_locations(&monster_db_path, quiet)?;
+
+            if quiet == 0 {
+                info!("Successfully stored {} boss locations in database: {:?}",
                       inserted, db_path);
             }
         }

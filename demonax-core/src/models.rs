@@ -403,3 +403,23 @@ pub struct PlayerSnapshot {
     pub snapshot_date: String,
     pub equipment: Vec<i32>,  // Deserialized from equipment_json
 }
+
+/// Monster spawn entry parsed from monster.db
+#[derive(Debug, Clone)]
+pub struct MonsterSpawn {
+    pub race_id: i32,
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
+
+/// Boss location with creature data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BossLocation {
+    pub race_id: i32,       // From monster.db
+    pub boss_name: String,  // From creatures.name WHERE type='Boss'
+    pub file_name: String,  // From creatures.short_name
+    pub x: i32,            // From monster.db
+    pub y: i32,            // From monster.db
+    pub z: i32,            // From monster.db (level)
+}

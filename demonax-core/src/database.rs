@@ -1,7 +1,7 @@
 use crate::error::{DemonaxError, Result};
 use crate::file_utils;
 use crate::models::{
-    Creature, CreatureLoot, CreatureSpell, ParsedUsrFile, PlayerSnapshot,
+    BossLocation, Creature, CreatureLoot, CreatureSpell, ParsedUsrFile, PlayerSnapshot,
 };
 use crate::parsers;
 use r2d2::{Pool, PooledConnection};
@@ -331,6 +331,20 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_npc_locations_file_name ON npc_locations(file_name);
             CREATE INDEX IF NOT EXISTS idx_npc_locations_npc_name ON npc_locations(npc_name);
             CREATE INDEX IF NOT EXISTS idx_npc_locations_coords ON npc_locations(x, y, z);
+
+            CREATE TABLE IF NOT EXISTS boss_locations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                race_id INTEGER NOT NULL,
+                boss_name TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL,
+                z INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_boss_locations_race_id ON boss_locations(race_id);
+            CREATE INDEX IF NOT EXISTS idx_boss_locations_boss_name ON boss_locations(boss_name);
+            CREATE INDEX IF NOT EXISTS idx_boss_locations_coords ON boss_locations(x, y, z);
             "#,
         )?;
 
@@ -1599,6 +1613,99 @@ impl Database {
         };
 
         Ok(snapshots)
+    }
+
+    /// Parse monster.db file, filter to bosses only, and populate boss_locations table
+    ///
+    /// This method:
+    /// 1. Queries all boss creatures from the database
+    /// 2. Parses the monster.db file
+    /// 3. Filters spawns to only those matching boss race IDs
+    /// 4. Clears and repopulates the boss_locations table
+    ///
+    /// Returns the number of boss locations inserted
+    pub fn clear_and_insert_boss_locations(
+        &self,
+        monster_db_path: &std::path::Path,
+        quiet: u8,
+    ) -> Result<usize> {
+        let mut conn = self.connection()?;
+
+        // Step 1: Query all bosses from creatures table
+        let boss_map: HashMap<i32, (String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT race, name, short_name FROM creatures WHERE type = 'Boss'"
+            )?;
+
+            stmt.query_map([], |row| {
+                let race_id: i32 = row.get(0)?;
+                let boss_name: String = row.get(1)?;
+                let short_name: String = row.get(2)?;
+                Ok((race_id, (boss_name, short_name)))
+            })?
+            .collect::<std::result::Result<HashMap<_, _>, _>>()?
+        };
+
+        if quiet == 0 {
+            println!("Found {} boss creatures in database", boss_map.len());
+        }
+
+        // Step 2: Parse monster.db file
+        let spawns = parsers::parse_monster_db(monster_db_path)?;
+
+        if quiet == 0 {
+            println!("Parsed {} total spawn locations from monster.db", spawns.len());
+        }
+
+        // Step 3: Filter spawns to only boss race IDs
+        let mut boss_locations = Vec::new();
+        for spawn in spawns {
+            if let Some((boss_name, short_name)) = boss_map.get(&spawn.race_id) {
+                boss_locations.push(BossLocation {
+                    race_id: spawn.race_id,
+                    boss_name: boss_name.clone(),
+                    file_name: short_name.clone(),
+                    x: spawn.x,
+                    y: spawn.y,
+                    z: spawn.z,
+                });
+            }
+        }
+
+        if quiet == 0 {
+            println!("Filtered to {} boss spawn locations", boss_locations.len());
+        }
+
+        // Step 4: Clear and insert boss locations in a transaction
+        let tx = conn.transaction()?;
+
+        tx.execute("DELETE FROM boss_locations", [])?;
+
+        {
+            let mut insert_stmt = tx.prepare(
+                "INSERT INTO boss_locations (race_id, boss_name, file_name, x, y, z)
+                 VALUES (?, ?, ?, ?, ?, ?)"
+            )?;
+
+            for location in &boss_locations {
+                insert_stmt.execute(params![
+                    location.race_id,
+                    location.boss_name,
+                    location.file_name,
+                    location.x,
+                    location.y,
+                    location.z,
+                ])?;
+            }
+        }
+
+        tx.commit()?;
+
+        if quiet == 0 {
+            println!("Successfully inserted {} boss locations", boss_locations.len());
+        }
+
+        Ok(boss_locations.len())
     }
 
     // Additional helper methods will be added as needed

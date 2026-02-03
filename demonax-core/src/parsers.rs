@@ -3,7 +3,7 @@
 use crate::error::{DemonaxError, Result};
 use crate::file_utils::{read_latin1_file, read_utf8_file};
 use crate::models::{
-    BestiaryEntry, Creature, CreatureLoot, CreatureSpell, HarvestingEntry, Item, ItemPrice, ParsedUsrFile, PlayerSkills,
+    BestiaryEntry, Creature, CreatureLoot, CreatureSpell, HarvestingEntry, Item, ItemPrice, MonsterSpawn, NpcLocation, ParsedUsrFile, PlayerSkills,
     QuestChest, QuestCompletion, Raid, RuneSeller, Spell, SpellImpactType, SpellShapeType, SpellTeacher,
     damage_type_name,
 };
@@ -329,8 +329,9 @@ pub fn parse_mon_file(file_path: &Path) -> Result<Creature> {
     let hp = get_hitpoints(&text).unwrap_or(0);
     let experience = get_int(&text, "Experience").unwrap_or(0);
 
-    // Determine creature type based on article (as per R code)
-    let creature_type = if article == "A" || article == "An" {
+    // Determine creature type based on article
+    // Bosses have no article (empty string), regular creatures have "a" or "an"
+    let creature_type = if article.eq_ignore_ascii_case("a") || article.eq_ignore_ascii_case("an") {
         "Regular".to_string()
     } else {
         "Boss".to_string()
@@ -1642,6 +1643,58 @@ fn extract_rune_vocations(line: &str) -> Vec<Option<String>> {
     vec![None]
 }
 
+/// Parse .npc file and extract NPC location data
+pub fn parse_npc_location(file_path: &Path) -> Result<NpcLocation> {
+    let text = read_latin1_file(file_path)?;
+
+    // Extract file_name from path
+    let file_name = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| DemonaxError::Parse("Invalid filename".to_string()))?
+        .to_string();
+
+    // Extract NPC name: Name = "..."
+    let name_re = Regex::new(r#"Name\s*=\s*"([^"]+)""#)
+        .map_err(|e| DemonaxError::Parse(format!("Regex error: {}", e)))?;
+
+    let npc_name = name_re.captures(&text)
+        .and_then(|cap| cap.get(1))
+        .map(|m| m.as_str().to_string())
+        .ok_or_else(|| DemonaxError::Parse(
+            format!("Missing Name field in {:?}", file_path)
+        ))?;
+
+    // Extract Home coordinates: Home = [x,y,z]
+    let home_re = Regex::new(r"Home\s*=\s*\[(\d+),(\d+),(\d+)\]")
+        .map_err(|e| DemonaxError::Parse(format!("Regex error: {}", e)))?;
+
+    let coords = home_re.captures(&text)
+        .ok_or_else(|| DemonaxError::Parse(
+            format!("Missing Home field in {:?}", file_path)
+        ))?;
+
+    let x: i32 = coords.get(1)
+        .and_then(|m| m.as_str().parse().ok())
+        .ok_or_else(|| DemonaxError::Parse("Invalid X coordinate".to_string()))?;
+
+    let y: i32 = coords.get(2)
+        .and_then(|m| m.as_str().parse().ok())
+        .ok_or_else(|| DemonaxError::Parse("Invalid Y coordinate".to_string()))?;
+
+    let z: i32 = coords.get(3)
+        .and_then(|m| m.as_str().parse().ok())
+        .ok_or_else(|| DemonaxError::Parse("Invalid Z coordinate".to_string()))?;
+
+    Ok(NpcLocation {
+        file_name,
+        npc_name,
+        x,
+        y,
+        z,
+    })
+}
+
 /// Parse .evt raid file
 ///
 /// Extracts raid information including type, interval, messages, and creature spawns
@@ -1784,6 +1837,109 @@ pub fn parse_evt_file(file_path: &Path) -> Result<Raid> {
         creatures,
         spawn_composition_json,
     })
+}
+
+/// Parse monster.db file and extract monster spawn locations
+///
+/// Format: race_id x y z radius amount regen (space-separated)
+/// Returns only race_id, x, y, z coordinates
+pub fn parse_monster_db(file_path: &Path) -> Result<Vec<MonsterSpawn>> {
+    let text = read_latin1_file(file_path)?;
+    let mut spawns = Vec::new();
+
+    for (line_num, line) in text.lines().enumerate() {
+        let line = line.trim();
+
+        // Skip empty lines and comments
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        // Parse space-separated values: race_id x y z radius amount regen
+        let parts: Vec<&str> = line.split_whitespace().collect();
+
+        if parts.len() < 4 {
+            if tracing::enabled!(tracing::Level::WARN) {
+                tracing::warn!(
+                    "Skipping malformed line {} in {:?}: expected at least 4 fields, got {}",
+                    line_num + 1,
+                    file_path,
+                    parts.len()
+                );
+            }
+            continue;
+        }
+
+        // Parse required fields
+        let race_id = match parts[0].parse::<i32>() {
+            Ok(id) => id,
+            Err(_) => {
+                if tracing::enabled!(tracing::Level::WARN) {
+                    tracing::warn!(
+                        "Skipping line {} in {:?}: invalid race_id '{}'",
+                        line_num + 1,
+                        file_path,
+                        parts[0]
+                    );
+                }
+                continue;
+            }
+        };
+
+        let x = match parts[1].parse::<i32>() {
+            Ok(val) => val,
+            Err(_) => {
+                if tracing::enabled!(tracing::Level::WARN) {
+                    tracing::warn!(
+                        "Skipping line {} in {:?}: invalid x coordinate '{}'",
+                        line_num + 1,
+                        file_path,
+                        parts[1]
+                    );
+                }
+                continue;
+            }
+        };
+
+        let y = match parts[2].parse::<i32>() {
+            Ok(val) => val,
+            Err(_) => {
+                if tracing::enabled!(tracing::Level::WARN) {
+                    tracing::warn!(
+                        "Skipping line {} in {:?}: invalid y coordinate '{}'",
+                        line_num + 1,
+                        file_path,
+                        parts[2]
+                    );
+                }
+                continue;
+            }
+        };
+
+        let z = match parts[3].parse::<i32>() {
+            Ok(val) => val,
+            Err(_) => {
+                if tracing::enabled!(tracing::Level::WARN) {
+                    tracing::warn!(
+                        "Skipping line {} in {:?}: invalid z coordinate '{}'",
+                        line_num + 1,
+                        file_path,
+                        parts[3]
+                    );
+                }
+                continue;
+            }
+        };
+
+        spawns.push(MonsterSpawn {
+            race_id,
+            x,
+            y,
+            z,
+        });
+    }
+
+    Ok(spawns)
 }
 
 #[cfg(test)]
