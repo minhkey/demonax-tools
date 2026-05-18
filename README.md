@@ -815,6 +815,156 @@ This test script will:
 
 ---
 
+### 14. boost-creature - Boost Creature Stats for Daily Events
+
+Randomly select and boost a creature's experience and loot drop rates.
+
+**Syntax:**
+```bash
+demonax boost-creature --game-path <DIR> [OPTIONS]
+```
+
+**Purpose:** Daily creature boosting system that selects a random eligible creature, boosts its experience and loot drop rates, and maintains a backup for restoration. Used for daily rotating boosted creatures to encourage varied gameplay.
+
+**Inputs:**
+- `--game-path`: Game directory containing `mon/` subdirectory
+- `--exp-multiplier`: Experience multiplier (default: 4.0)
+- `--loot-multiplier`: Loot drop rate multiplier (default: 2.0)
+- `--max-loot-chance`: Maximum loot chance value (default: 999)
+- `--creature-name`: Specific creature to boost (optional, random if not provided)
+- `--image-source-dir`: Source directory for creature images (PNG files named `{race_id}.png`)
+- `--image-dest-path`: Destination path for the boosted creature image
+- `--dry-run`: Show what would be done without modifying files
+- `--quiet <0-2>`: Verbosity level
+
+**Outputs:**
+- Modified .mon file with boosted experience and loot rates
+- Backup file in `{game_path}/boosted_original/`
+- Optional: Copied creature image to destination path
+
+**Selection Criteria:**
+- Must have loot (excludes lootless creatures)
+- Must give at least 50 experience
+- Must not be a Boss
+- Excluded creatures: deathslicer, slime2, illusion, butterflies (all colors), mimic, halloweenhare, throwers (all types), human, gamemaster
+
+**Behavior:**
+- Automatically restores any previous boost before creating a new one
+- Only one backup can exist at a time (safety mechanism)
+- Preserves exact .mon file format and Latin1 encoding
+- Loot chances doubled and capped at 999 (100% drop rate)
+- Random selection uses system time seed for variety
+
+**Performance:** < 0.1 seconds
+
+**Example:**
+```bash
+# Basic boost with defaults (4x exp, 2x loot)
+demonax boost-creature --game-path /home/cmd/game
+
+# Custom multipliers
+demonax boost-creature \
+  --game-path /home/cmd/game \
+  --exp-multiplier 3.0 \
+  --loot-multiplier 1.5
+
+# Boost specific creature
+demonax boost-creature \
+  --game-path /home/cmd/game \
+  --creature-name dragon
+
+# With image copying for web display
+demonax boost-creature \
+  --game-path /home/cmd/game \
+  --image-source-dir ~/demonax-web/asset/img/outfit \
+  --image-dest-path ~/demonax-web/img/daily.png
+
+# Dry run to preview selection
+demonax boost-creature \
+  --game-path /home/cmd/game \
+  --dry-run
+```
+
+**Test Output Example:**
+```
+Boosting creature
+Checking for previous boost to restore
+No previous boost to restore
+Selecting random eligible creature
+Selected creature: dragon (dragon)
+  Race ID: 34
+  Original Experience: 2800
+  Type: Regular
+  Has Loot: true
+Boost configuration:
+  Experience: 2800 -> 11200 (4x)
+  Loot chance multiplier: 2x (capped at 999)
+Creating backup
+Backup created: "/home/cmd/game/boosted_original/dragon.mon"
+Applying boost modifications
+Boost applied successfully
+Skipping image copy (no source/dest specified)
+--- Complete ---
+Boosted creature: dragon
+Backup location: "/home/cmd/game/boosted_original/dragon.mon"
+```
+
+**Data Notes:**
+- Experience is multiplied by the configured value (default 4x)
+- Loot drop chances are multiplied and capped at 999 (guaranteed drop)
+  - Example: Original 472 → 944 (doubled)
+  - Example: Original 642 → 999 (doubled would be 1284, capped at 999)
+- File format preserved exactly (spacing, line endings, encoding)
+- Uses Latin1/Windows-1252 encoding (matching game files)
+
+---
+
+### 15. restore-boosted-creature - Restore Original Creature Stats
+
+Restore a previously boosted creature to its original state.
+
+**Syntax:**
+```bash
+demonax restore-boosted-creature --game-path <DIR> [--quiet <0-2>]
+```
+
+**Purpose:** Restore the previously boosted creature from backup before boosting a new one. Automatically called by `boost-creature` but can be run manually if needed.
+
+**Inputs:**
+- `--game-path`: Game directory containing `boosted_original/` backup directory
+- `--quiet <0-2>`: Verbosity level
+
+**Outputs:**
+- Restored .mon file in `{game_path}/mon/`
+- Empty backup directory
+
+**Behavior:**
+- Looks for .mon file in `{game_path}/boosted_original/`
+- Moves backup file back to `mon/` directory (overwrites boosted version)
+- Does nothing if no backup exists (safe to run multiple times)
+- Only one backup can exist at a time
+
+**Performance:** < 0.1 seconds
+
+**Example:**
+```bash
+demonax restore-boosted-creature --game-path /home/cmd/game
+```
+
+**Test Output Example:**
+```
+Restoring previously boosted creature
+Restored: dragon to "/home/cmd/game/mon/dragon.mon"
+```
+
+**Use Cases:**
+- Manually restore before server maintenance
+- Reset boosted creature without selecting a new one
+- Cleanup after testing
+- Emergency restore if something goes wrong
+
+---
+
 ## Command Execution Order
 
 Commands should be executed in this order due to dependencies:
@@ -1453,6 +1603,8 @@ Based on test data in `DEV/game/`:
 | update-move-use-harvesting | 1 CSV        | 0.02s | 56 rules in moveuse.dat    |
 | give-present       | 18 .usr             | 0.1s  | 15 gifted, 3 skipped       |
 | render-equipment   | DB + 180 item PNGs  | 0.02s | 18 equipment images        |
+| boost-creature     | Random .mon selection | 0.01s | 1 creature boosted        |
+| restore-boosted-creature | 1 .mon backup | 0.01s | 1 creature restored        |
 
 **Total:** ~10 seconds, ~50-100 MB database (depending on loot/quest data volume)
 
@@ -1488,6 +1640,8 @@ demonax-tools/
 │       ├── inventory.rs    # Inventory parsing/serialization for .usr files
 │       ├── present.rs      # Present config and application logic
 │       ├── rendering.rs    # Equipment image rendering with image crate
+│       ├── mon_writer.rs   # Monster file modification for boosting
+│       ├── creature_boost.rs # Creature selection, backup/restore
 │       ├── error.rs        # Error types
 │       ├── file_utils.rs   # File discovery
 │       └── processors.rs   # Processing logic

@@ -2,11 +2,13 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use demonax_core::database::Database;
 use demonax_core::file_utils::find_files_with_extension;
-use demonax_core::parsers::{parse_evt_file, parse_magic_cc, parse_map_sector_file, parse_npc_file, parse_npc_location, parse_npc_rune_selling, parse_npc_spell_teaching, parse_objects_srv};
+use demonax_core::parsers::{parse_evt_file, parse_magic_cc, parse_map_sector_file, parse_mon_file, parse_npc_file, parse_npc_location, parse_npc_rune_selling, parse_npc_spell_teaching, parse_objects_srv};
 use demonax_core::models::HarvestingData;
 use demonax_core::{generate_all_harvesting_rules, insert_harvesting_rules};
 use demonax_core::present::{apply_present_to_file, GiftResult, GiftSummary, PresentConfig};
 use demonax_core::rendering::{render_player_equipment, RenderConfig};
+use demonax_core::creature_boost::{backup_creature_file, copy_creature_image, restore_previous_boost, select_random_creature, CreatureSelector};
+use demonax_core::mon_writer::{apply_boost_to_file, BoostConfig};
 use image::open;
 use rayon::prelude::*;
 use tracing::info;
@@ -257,6 +259,56 @@ enum Commands {
         /// Optional: render only this player ID (omit to render all)
         #[arg(long)]
         player_id: Option<i32>,
+
+        /// Quiet mode (0=show messages/warnings, 1=suppress messages, 2=suppress both)
+        #[arg(long, default_value_t = 0)]
+        quiet: u8,
+    },
+
+    /// Boost a random creature's experience and loot drop rates
+    BoostCreature {
+        /// Game directory containing mon/ subdirectory
+        #[arg(long, env = "DEMONAX_GAME_DIR")]
+        game_path: std::path::PathBuf,
+
+        /// Experience multiplier (default: 4.0)
+        #[arg(long, default_value_t = 4.0)]
+        exp_multiplier: f64,
+
+        /// Loot drop rate multiplier (default: 2.0)
+        #[arg(long, default_value_t = 2.0)]
+        loot_multiplier: f64,
+
+        /// Maximum loot chance value (default: 999)
+        #[arg(long, default_value_t = 999)]
+        max_loot_chance: i32,
+
+        /// Specific creature name to boost (optional, random if not provided)
+        #[arg(long)]
+        creature_name: Option<String>,
+
+        /// Source directory for creature images (PNG files named {race_id}.png)
+        #[arg(long)]
+        image_source_dir: Option<std::path::PathBuf>,
+
+        /// Destination path for the boosted creature image
+        #[arg(long)]
+        image_dest_path: Option<std::path::PathBuf>,
+
+        /// Show what would be done without modifying files
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+
+        /// Quiet mode (0=show messages/warnings, 1=suppress messages, 2=suppress both)
+        #[arg(long, default_value_t = 0)]
+        quiet: u8,
+    },
+
+    /// Restore a previously boosted creature to its original state
+    RestoreBoostedCreature {
+        /// Game directory containing boosted_original/ backup directory
+        #[arg(long, env = "DEMONAX_GAME_DIR")]
+        game_path: std::path::PathBuf,
 
         /// Quiet mode (0=show messages/warnings, 1=suppress messages, 2=suppress both)
         #[arg(long, default_value_t = 0)]
@@ -1063,6 +1115,158 @@ async fn main() -> Result<()> {
                 info!("Successfully rendered: {}", success_count);
                 info!("Errors: {}", error_count);
                 info!("Output directory: {:?}", config.output_dir);
+            }
+        }
+        Commands::BoostCreature {
+            game_path,
+            exp_multiplier,
+            loot_multiplier,
+            max_loot_chance,
+            creature_name,
+            image_source_dir,
+            image_dest_path,
+            dry_run,
+            quiet,
+        } => {
+            if quiet == 0 {
+                if dry_run {
+                    info!("Boosting creature (DRY RUN)");
+                } else {
+                    info!("Boosting creature");
+                }
+            }
+
+            // Step 1: Restore any previous boost (unless dry run)
+            if !dry_run {
+                if quiet == 0 {
+                    info!("Checking for previous boost to restore");
+                }
+                match restore_previous_boost(&game_path)? {
+                    Some(restored_path) => {
+                        if quiet == 0 {
+                            info!(
+                                "Restored previous boost: {}",
+                                restored_path.file_name().unwrap().to_string_lossy()
+                            );
+                        }
+                    }
+                    None => {
+                        if quiet == 0 {
+                            info!("No previous boost to restore");
+                        }
+                    }
+                }
+            }
+
+            // Step 2: Select creature
+            let mon_dir = game_path.join("mon");
+            let creature_path = if let Some(name) = creature_name {
+                // Use specified creature
+                let path = mon_dir.join(format!("{}.mon", name));
+                if !path.exists() {
+                    anyhow::bail!("Creature file not found: {:?}", path);
+                }
+                path
+            } else {
+                // Select random eligible creature
+                if quiet == 0 {
+                    info!("Selecting random eligible creature");
+                }
+                let selector = CreatureSelector::default();
+                select_random_creature(&mon_dir, &selector)?
+            };
+
+            // Step 3: Parse creature info
+            let creature = parse_mon_file(&creature_path)?;
+
+            if quiet == 0 {
+                info!("Selected creature: {} ({})", creature.name, creature.short_name);
+                info!("  Race ID: {}", creature.race);
+                info!("  Original Experience: {}", creature.experience);
+                info!("  Type: {}", creature.creature_type);
+                info!("  Has Loot: {}", creature.has_loot);
+            }
+
+            // Calculate boosted values
+            let boosted_exp = (creature.experience as f64 * exp_multiplier) as i32;
+
+            if quiet == 0 {
+                info!("Boost configuration:");
+                info!("  Experience: {} -> {} ({}x)", creature.experience, boosted_exp, exp_multiplier);
+                info!("  Loot chance multiplier: {}x (capped at {})", loot_multiplier, max_loot_chance);
+            }
+
+            if dry_run {
+                if quiet == 0 {
+                    info!("DRY RUN - no files would be modified");
+                }
+            } else {
+                // Step 4: Backup original file
+                if quiet == 0 {
+                    info!("Creating backup");
+                }
+                let backup_path = backup_creature_file(&creature_path, &game_path)?;
+                if quiet == 0 {
+                    info!("Backup created: {:?}", backup_path);
+                }
+
+                // Step 5: Apply boost modifications
+                if quiet == 0 {
+                    info!("Applying boost modifications");
+                }
+                let config = BoostConfig {
+                    exp_multiplier,
+                    loot_multiplier,
+                    max_loot_chance,
+                };
+                apply_boost_to_file(&creature_path, &config)?;
+
+                if quiet == 0 {
+                    info!("Boost applied successfully");
+                }
+
+                // Step 6: Optionally copy image
+                if let (Some(source_dir), Some(dest_path)) = (image_source_dir, image_dest_path) {
+                    if quiet == 0 {
+                        info!("Copying creature image");
+                    }
+                    copy_creature_image(creature.race, &source_dir, &dest_path)?;
+                    if quiet == 0 {
+                        info!("Image copied to {:?}", dest_path);
+                    }
+                } else if quiet == 0 {
+                    info!("Skipping image copy (no source/dest specified)");
+                }
+
+                if quiet == 0 {
+                    info!("--- Complete ---");
+                    info!("Boosted creature: {}", creature.name);
+                    info!("Backup location: {:?}", backup_path);
+                }
+            }
+        }
+        Commands::RestoreBoostedCreature { game_path, quiet } => {
+            if quiet == 0 {
+                info!("Restoring previously boosted creature");
+            }
+
+            match restore_previous_boost(&game_path)? {
+                Some(restored_path) => {
+                    let creature_name = restored_path
+                        .file_stem()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string();
+
+                    if quiet == 0 {
+                        info!("Restored: {} to {:?}", creature_name, restored_path);
+                    }
+                }
+                None => {
+                    if quiet == 0 {
+                        info!("No boosted creature to restore");
+                    }
+                }
             }
         }
     }

@@ -4,6 +4,6 @@
 /target/
 /test-output/
 CLAUDE.md
-.claude
+.claude/
 testing/
 scripts/

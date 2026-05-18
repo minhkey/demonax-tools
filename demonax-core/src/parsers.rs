@@ -1048,7 +1048,6 @@ fn extract_item_ids_from_content(content_str: &str) -> Vec<i32> {
     let mut item_ids = Vec::new();
     let mut current_num = String::new();
     let mut depth = 0;
-    let mut in_nested_content = false;
     let mut nested_content = String::new();
 
     for ch in content_str.chars() {
@@ -1058,7 +1057,6 @@ fn extract_item_ids_from_content(content_str: &str) -> Vec<i32> {
                     nested_content.push(ch);
                 }
                 depth += 1;
-                in_nested_content = true;
 
                 // Save the current number before entering nested content
                 if !current_num.is_empty() && depth == 1 {
@@ -1079,7 +1077,6 @@ fn extract_item_ids_from_content(content_str: &str) -> Vec<i32> {
                         item_ids.extend(nested_ids);
                         nested_content.clear();
                     }
-                    in_nested_content = false;
                 }
             }
             ',' | ' ' => {
@@ -1162,8 +1159,6 @@ pub fn parse_map_sector_file(file_path: &Path) -> Result<Vec<QuestChest>> {
     let quest_value_re = Regex::new(r"ChestQuestNumber\s*=\s*(\d+)")
         .map_err(|e| DemonaxError::Parse(format!("Regex error: {}", e)))?;
     let key_number_re = Regex::new(r"KeyNumber\s*=\s*(\d+)")
-        .map_err(|e| DemonaxError::Parse(format!("Regex error: {}", e)))?;
-    let content_re = Regex::new(r"Content\s*=\s*\{([^}]+)\}")
         .map_err(|e| DemonaxError::Parse(format!("Regex error: {}", e)))?;
 
     for line in chest_lines {
